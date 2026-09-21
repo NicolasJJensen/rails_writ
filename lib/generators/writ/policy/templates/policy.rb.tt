@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+class <%= class_name %>Policy < ApplicationPolicy
+<%- custom_action_names.each do |action| -%>
+  def <%= action %>?
+    permitted?(:<%= action %>)
+  end
+
+<%- end -%>
+<%- role_names.each_with_index do |role, index| -%>
+<%= "\n" unless index == 0 -%>
+  role <%= role.inspect %> do
+<%- action_names.each do |action| -%>
+    permission :<%= action %>
+<%- end -%>
+    accessible_fields :all
+  end
+<%- end -%>
+end

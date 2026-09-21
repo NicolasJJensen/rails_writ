@@ -1,0 +1,13 @@
+class Create<%= model_table_name('PermissionScope').camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    create_table :<%= model_table_name('PermissionScope') %> do |t|
+      t.references :permission, index: { name: <%= index_name(model_table_name('PermissionScope'), 'permission').inspect %> }, null: false, foreign_key: { to_table: :<%= model_table_name('Permission') %> }
+      t.references :scope, index: { name: <%= index_name(model_table_name('PermissionScope'), 'scope').inspect %> }, null: false, foreign_key: { to_table: :<%= model_table_name('Scope') %> }
+      t.jsonb :arguments, default: {}, null: false
+
+      t.timestamps
+    end
+
+    add_index :<%= model_table_name('PermissionScope') %>, [:permission_id, :scope_id], unique: true, name: <%= index_name(model_table_name('PermissionScope'), 'pair').inspect %>
+  end
+end

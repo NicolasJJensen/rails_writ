@@ -1,0 +1,39 @@
+en:
+  writ:
+    # Scope descriptions - used for documentation and rake tasks
+    # Scopes filter which records a user can access based on their attributes
+    scopes:
+      # Asset scopes
+      service_industry: "Assets under the same service industry as the user"
+      current_location: "Records at the current location of the user"
+      created: "Records created by the user"
+      status_active: "Assets with active/satisfactory status"
+
+      # User scopes (reuses current_location key)
+      # current_location: "Users at the same location"
+
+      # CheckIn scopes (reuses current_location and created keys)
+      # created: "CheckIns created by the user"
+
+      # Common/special scopes
+      all: "All records (no filtering)"
+
+    # Condition descriptions - used for documentation and rake tasks
+    # Conditions determine when a permission can be used based on context
+    conditions:
+      # Time-based conditions
+      business_hours: "Only during business hours (9am-5pm, weekdays)"
+      after_hours: "Only outside business hours"
+      weekdays_only: "Only Monday through Friday"
+      weekends_only: "Only Saturday and Sunday"
+
+      # Location-based conditions
+      in_office: "Only from office IP address range"
+      on_site_location: "Only when user is checked in on-site"
+
+      # Device-based conditions
+      desktop_only: "Only from desktop devices (not mobile)"
+      mobile_allowed: "Allowed from any device type"
+
+      # Security conditions
+      mfa_verified: "Requires multi-factor authentication verification"

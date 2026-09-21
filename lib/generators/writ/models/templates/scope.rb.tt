@@ -1,0 +1,12 @@
+<%= namespace_opening %>class Scope < ::ApplicationRecord
+  self.table_name = <%= model_table_name('Scope').inspect %>
+  has_many :permission_scopes, class_name: <%= ('::' + model_class_name('PermissionScope')).inspect %>, foreign_key: :scope_id, dependent: :restrict_with_error
+  has_many :permissions, through: :permission_scopes
+
+  validates :name, presence: true,
+                   format: { with: Writ::NAME_FORMAT,
+                             message: "must be lowercase, start with a letter, and contain only letters, numbers, and underscores" }
+  validates :model, presence: true
+  validates :name, uniqueness: { scope: :model }
+end
+<%= namespace_closing %>

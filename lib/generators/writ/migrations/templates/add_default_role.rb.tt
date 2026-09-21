@@ -1,0 +1,6 @@
+class AddDefaultRoleTo<%= scoping_model_name.delete(':').pluralize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    add_reference :<%= scoping_table_name %>, :default_role,
+                  foreign_key: { to_table: :<%= model_table_name('Role') %>, deferrable: :deferred }
+  end
+end

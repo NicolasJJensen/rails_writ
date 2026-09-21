@@ -1,0 +1,15 @@
+class Create<%= model_table_name('Permission').camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    create_table :<%= model_table_name('Permission') %> do |t|
+      t.references :role, index: { name: <%= index_name(model_table_name('Permission'), 'role').inspect %> }, null: false, foreign_key: { to_table: :<%= model_table_name('Role') %> }
+      t.string :model, index: { name: <%= index_name(model_table_name('Permission'), 'model').inspect %> }, null: false
+      t.string :action, null: false
+      t.string :generated_signature
+
+      t.timestamps
+    end
+
+    add_index :<%= model_table_name('Permission') %>, [:action, :model], name: <%= index_name(model_table_name('Permission'), 'action_model').inspect %>
+    add_index :<%= model_table_name('Permission') %>, [:role_id, :action, :model], name: <%= index_name(model_table_name('Permission'), 'role_action_model').inspect %>
+  end
+end

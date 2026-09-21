@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+Writ.configure do |config|
+  config.multi_tenant = <%= multi_tenant? %>
+<%- if multi_tenant? -%>
+  config.default_scoping_model = <%= scoping_model_name.inspect %>
+<%- end -%>
+<%- %w[Role Permission Scope PermissionScope Condition PermissionCondition].each do |name| -%>
+  config.<%= name.underscore %>_class = <%= model_class_name(name).inspect %>
+<%- end -%>
+
+  # The tenant default role name. User-role assignment belongs to the host.
+  # config.default_role_name = 'Default Role'
+
+  # What happens when a permission references a condition that isn't registered.
+  # :raise (default) - raises Writ::ConditionNotFoundError
+  # :deny  - silently denies the permission
+  # config.on_missing_condition = :raise
+
+  # What happens when a registered condition raises an error at runtime.
+  # :raise (default) - re-raises the error
+  # :deny  - silently denies the permission
+  # config.on_condition_error = :raise
+
+  # Keep :raise while policy definitions are expected to be complete. Use a
+  # warning only while introducing definitions incrementally.
+  # :raise (default) - fail closed with ConfigurationError
+  # :warning          - log and skip only that missing proposed-state matcher
+  # :skip             - skip only that missing proposed-state matcher
+  # config.on_missing_matcher = :raise
+
+  # Optional strict field default: missing field rules expose no fields.
+  # config.field_default = []
+
+  # Optional global proposed-state hooks. Model hooks are declared in each policy.
+  # config.creation_validator do |context:, record:|
+  #   record.organisation_id == context.organisation_id
+  # end
+  # config.update_validator do |context:, record:|
+  #   record.organisation_id == context.organisation_id
+  # end
+  # config.field_resolver do |context:, action:, record:, fields:|
+  #   fields
+  # end
+
+  # Optional host callbacks for tenant-specific permission and role loading.
+  # Return the permissions or roles available to the current context. The gem
+  # does not infer tenant ownership from these callbacks.
+  # config.permission_source = ->(context) { context.permissions_for_current_tenant }
+  # config.role_source = ->(context) { context.roles_for_current_tenant }
+
+end

@@ -1,0 +1,9 @@
+source 'https://rubygems.org'
+gemspec path: '..'
+gem 'rails', '~> 7.1.0'
+gem 'rspec-rails', '~> 6.0'
+group :development do
+  gem 'pg', '~> 1.1'
+  gem 'factory_bot_rails', '~> 6.2'
+  gem 'pundit', '~> 2.3'
+end

@@ -1,0 +1,19 @@
+<%= namespace_opening %>class Role < ::ApplicationRecord
+  self.table_name = <%= model_table_name('Role').inspect %>
+<%- if multi_tenant? -%>
+  belongs_to :<%= scoping_association %>, class_name: <%= ('::' + scoping_model_name).inspect %>, primary_key: <%= scoping_primary_key.inspect %>
+<%- end -%>
+
+  has_many :permissions, class_name: <%= ('::' + model_class_name('Permission')).inspect %>, foreign_key: :role_id, dependent: :destroy
+
+  has_and_belongs_to_many :<%= roleable_association %>, class_name: <%= ('::' + roleable_model_name).inspect %>,
+                         foreign_key: :role_id, association_foreign_key: :<%= roleable_foreign_key %>
+
+  accepts_nested_attributes_for :permissions
+
+  validates :name, presence: true<%= multi_tenant? ? ", uniqueness: { scope: :#{scoping_association}_id }" : ", uniqueness: true" %>
+<%- if multi_tenant? -%>
+  validates :<%= scoping_association %>, presence: true
+<%- end -%>
+end
+<%= namespace_closing %>

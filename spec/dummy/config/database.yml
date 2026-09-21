@@ -1,0 +1,5 @@
+test:
+  adapter: postgresql
+  database: writ_test
+  encoding: unicode
+  pool: 5

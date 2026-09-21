@@ -1,0 +1,23 @@
+class Create<%= model_table_name('Role').camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    create_table :<%= model_table_name('Role') %> do |t|
+<%- if multi_tenant? -%>
+      t.references :<%= scoping_association %>, type: :<%= scoping_primary_key_type %>, index: { name: <%= index_name(model_table_name('Role'), 'tenant').inspect %> }, null: false, foreign_key: { to_table: :<%= scoping_table_name %>, primary_key: <%= scoping_primary_key.inspect %> }
+<%- end -%>
+      t.string :name, null: false
+      t.string :description
+      t.string :color
+      t.jsonb :accessible_fields, default: {}, null: false
+      t.jsonb :generated_fields, default: {}, null: false
+
+      t.timestamps
+    end
+<%- if multi_tenant? -%>
+
+    add_index :<%= model_table_name('Role') %>, [:<%= scoping_association %>_id, :name], unique: true, name: <%= index_name(model_table_name('Role'), 'tenant_name').inspect %>
+<%- else -%>
+
+    add_index :<%= model_table_name('Role') %>, :name, unique: true, name: <%= index_name(model_table_name('Role'), 'name').inspect %>
+<%- end -%>
+  end
+end

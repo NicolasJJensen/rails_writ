@@ -1,0 +1,11 @@
+<%= namespace_opening %>class Condition < ::ApplicationRecord
+  self.table_name = <%= model_table_name('Condition').inspect %>
+  has_many :permission_conditions, class_name: <%= ('::' + model_class_name('PermissionCondition')).inspect %>, foreign_key: :condition_id, dependent: :restrict_with_error
+  has_many :permissions, through: :permission_conditions
+
+  validates :name, presence: true,
+                   format: { with: Writ::NAME_FORMAT,
+                             message: "must be lowercase, start with a letter, and contain only letters, numbers, and underscores" },
+                   uniqueness: true
+end
+<%= namespace_closing %>

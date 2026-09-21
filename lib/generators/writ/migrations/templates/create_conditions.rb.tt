@@ -1,0 +1,11 @@
+class Create<%= model_table_name('Condition').camelize %> < ActiveRecord::Migration<%= migration_version %>
+  def change
+    create_table :<%= model_table_name('Condition') %> do |t|
+      t.string :name, null: false
+
+      t.timestamps
+    end
+
+    add_index :<%= model_table_name('Condition') %>, :name, unique: true, name: <%= index_name(model_table_name('Condition'), 'name').inspect %>
+  end
+end
