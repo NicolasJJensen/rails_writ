@@ -562,7 +562,7 @@ module Writ
 
         if errors.any?
           raise Writ::ConfigurationError,
-                "Permission validation failed. Check for typos in your policies:\n  - #{errors.join("\n  - ")}"
+                "Permission validation failed. Check for typos in your permission definitions:\n  - #{errors.join("\n  - ")}"
         end
 
         permission_models = Set.new
@@ -596,7 +596,7 @@ module Writ
 
         if errors.any?
           raise Writ::ConfigurationError,
-                "Permission validation failed. Check for typos in your policies:\n  - #{errors.join("\n  - ")}"
+                "Permission validation failed. Check for typos in your permission definitions:\n  - #{errors.join("\n  - ")}"
         end
       end
 

@@ -111,9 +111,10 @@ RSpec.describe 'Generated host lifecycle' do
   it 'makes reusable concerns available to an ActiveRecord-only host' do
     output, status = Open3.capture2e(RbConfig.ruby, '-I', File.expand_path('../../../../lib', __dir__), '-e', <<~'CODE')
       require 'rails_writ'
-      puts [Writ::PermissionAssociations, Writ::PermissionJoinValidations, Writ::PolicyHelpers].map(&:name)
+      puts [Writ::PermissionAssociations, Writ::PermissionJoinValidations].map(&:name)
     CODE
     expect(status.success?).to be(true), output
-    expect(output).to include('Writ::PolicyHelpers')
+    expect(output).to include('Writ::PermissionAssociations')
+    expect(output).not_to include('Writ::Pundit')
   end
 end

@@ -192,7 +192,7 @@ module Writ
         previous = Thread.current[:writ_building_registry]
         Thread.current[:writ_building_registry] = candidate
         candidate.reload do
-          # Replay source blocks so Rails resolves current constants, then let policies depend on that configuration.
+          # Replay initializer settings before loading model-dependent definitions.
           (@configure_blocks || []).each { |block| apply_configuration(&block) }
           yield if block_given?
         end
@@ -223,7 +223,8 @@ module Writ
         @registry = candidate
         (@configure_blocks ||= []) << block
       ensure
-        Thread.current[:writ_building_registry] = previous if defined?(candidate)
+        # A configure call inside rebuild! must leave the enclosing candidate active.
+        Thread.current[:writ_building_registry] = previous if candidate
       end
 
       # Reset all memoized class references and clear the active registry.
@@ -238,7 +239,7 @@ module Writ
       #
       # @example With block (preferred)
       #   Configuration.reset! do
-      #     Rails.autoloaders.main.eager_load_dir(policies_path)
+      #     load Rails.root.join('config/writ/permissions.rb')
       #   end
       #
       # @example Without block (backward compatible; configure blocks are retained)

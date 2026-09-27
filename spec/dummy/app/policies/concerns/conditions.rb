@@ -2,8 +2,8 @@
 
 # Conditions Concern
 # Defines all reusable conditions for permissions across the application.
-# Uses the `condition` DSL method from Writ::PolicyHelpers.
-# Include this in ApplicationPolicy (after Writ::PolicyHelpers) to make conditions available to all policies.
+# Uses the `condition` DSL method from Writ::Pundit::PolicyHelpers.
+# Include this in ApplicationPolicy (after Writ::Pundit::PolicyHelpers) to make conditions available to all policies.
 module Conditions
   extend ActiveSupport::Concern
 

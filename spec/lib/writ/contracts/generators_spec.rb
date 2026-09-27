@@ -1,7 +1,7 @@
 require 'rails_helper'
 require 'tmpdir'
-require 'generators/writ/policy/policy_generator'
-require 'generators/writ/application_policy/application_policy_generator'
+require 'generators/writ/pundit/policy/policy_generator'
+require 'generators/writ/pundit/application_policy/application_policy_generator'
 require 'generators/writ/initializer/initializer_generator'
 require 'generators/writ/migrations/migrations_generator'
 require 'generators/writ/models/models_generator'
@@ -9,34 +9,28 @@ require 'generators/writ/models/models_generator'
 RSpec.describe 'Generated host code' do
   it 'generates valid Ruby for role names containing spaces' do
     Dir.mktmpdir do |dir|
-      Writ::Generators::PolicyGenerator.start(['Asset', '--roles', 'Default Role'], destination_root: dir)
+      Writ::Pundit::Generators::PolicyGenerator.start(['Asset', '--roles', 'Default Role'], destination_root: dir)
       expect { RubyVM::InstructionSequence.compile(File.read(File.join(dir, 'app/policies/asset_policy.rb'))) }.not_to raise_error
     end
   end
 
   it 'generates an ApplicationPolicy with explicit CRUD predicates' do
     Dir.mktmpdir do |dir|
-      Writ::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
+      Writ::Pundit::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
       source = File.read(File.join(dir, 'app/policies/application_policy.rb'))
 
-      expect(source).to include('def read?')
-      expect(source).to include('def create?')
-      expect(source).to include('def update?')
-      expect(source).to include('def delete?')
-      expect(source).to include('Access.authorization')
-      expect(source).to include('Access.filter')
-      expect(source).not_to include('def method_missing')
-      expect(source).not_to include('def respond_to_missing?')
+      expect(source).to include('ApplicationPolicy < Writ::Pundit::Policy')
+      expect(Writ::Pundit::Policy.instance_methods).to include(:read?, :create?, :update?, :delete?)
       expect { RubyVM::InstructionSequence.compile(source) }.not_to raise_error
     end
   end
 
-  it 'generates the Conditions dependency when generating ApplicationPolicy alone' do
+  it 'does not generate an empty Conditions concern' do
     Dir.mktmpdir do |dir|
-      Writ::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
+      Writ::Pundit::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
 
-      expect(File).to exist(File.join(dir, 'app/policies/concerns/conditions.rb'))
-      expect(File.read(File.join(dir, 'app/policies/application_policy.rb'))).to include('include Conditions')
+      expect(File).not_to exist(File.join(dir, 'app/policies/concerns/conditions.rb'))
+      expect(File.read(File.join(dir, 'app/policies/application_policy.rb'))).not_to include('include Conditions')
     end
   end
 
@@ -46,7 +40,7 @@ RSpec.describe 'Generated host code' do
       FileUtils.mkdir_p(File.dirname(path))
       File.write(path, "module Conditions\n  CUSTOM = true\nend\n")
 
-      Writ::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
+      Writ::Pundit::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
 
       expect(File.read(path)).to include('CUSTOM = true')
     end
@@ -57,18 +51,17 @@ RSpec.describe 'Generated host code' do
       Writ::Generators::InitializerGenerator.start([], destination_root: dir)
       source = File.read(File.join(dir, 'config/initializers/writ.rb'))
 
-      expect(source).to include('config.permission_source = ->(context) { context.permissions_for_current_tenant }')
-      expect(source).to include('config.role_source = ->(context) { context.roles_for_current_tenant }')
-      expect(source).to include('does not infer tenant ownership')
-      expect(source).to include(':warning          - log and skip only that missing proposed-state matcher')
-      expect(source).to include('Keep :raise while policy definitions are expected to be complete')
+      expect(source).to include('config.field_default = []')
+      expect(source).to include('config.on_missing_default_scope = :raise')
+      expect(source).not_to include('organisation_id', 'permissions_for_current_tenant')
+      expect(File).to exist(File.join(dir, 'config/writ/permissions.rb'))
     end
   end
 
   it 'dispatches generated CRUD and custom predicates and rejects unknown or invalid calls' do
     Dir.mktmpdir do |dir|
-      Writ::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
-      Writ::Generators::PolicyGenerator.start(
+      Writ::Pundit::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
+      Writ::Pundit::Generators::PolicyGenerator.start(
         ['Asset', '--roles', 'Admin', '--actions', 'read', 'create', 'update', 'delete', 'approve'],
         destination_root: dir
       )
@@ -107,8 +100,8 @@ RSpec.describe 'Generated host code' do
 
   it 'uses class-grant create authorization for a new record in the generated policy' do
     Dir.mktmpdir do |dir|
-      Writ::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
-      Writ::Generators::PolicyGenerator.start(['Asset', '--roles', 'Admin'], destination_root: dir)
+      Writ::Pundit::Generators::ApplicationPolicyGenerator.start([], destination_root: dir)
+      Writ::Pundit::Generators::PolicyGenerator.start(['Asset', '--roles', 'Admin'], destination_root: dir)
       stub_const('GeneratedCreatePolicyContract', Module.new)
       GeneratedCreatePolicyContract.const_set(:Conditions, Module.new)
       GeneratedCreatePolicyContract.const_set(:Asset, ::Asset)
@@ -177,7 +170,7 @@ RSpec.describe 'Generated host code' do
   it 'rejects invalid policy actions before writing a policy' do
     Dir.mktmpdir do |dir|
       expect do
-        Writ::Generators::PolicyGenerator.start(
+        Writ::Pundit::Generators::PolicyGenerator.start(
           ['Asset', '--roles', 'Admin', '--actions', 'bad-action'], destination_root: dir
         )
       end.to raise_error(ArgumentError, /Invalid action/)
@@ -189,7 +182,7 @@ RSpec.describe 'Generated host code' do
     Dir.mktmpdir do |dir|
       %w[show permitted respond_to is_a].each do |action|
         expect do
-          Writ::Generators::PolicyGenerator.start(
+          Writ::Pundit::Generators::PolicyGenerator.start(
             ['Asset', '--roles', 'Admin', '--actions', action], destination_root: dir
           )
         end.to raise_error(ArgumentError, /Reserved policy action/)
@@ -200,7 +193,7 @@ RSpec.describe 'Generated host code' do
 
   it 'keeps ordinary custom predicates while preserving policy introspection' do
     Dir.mktmpdir do |dir|
-      Writ::Generators::PolicyGenerator.start(
+      Writ::Pundit::Generators::PolicyGenerator.start(
         ['Asset', '--roles', 'Admin', '--actions', 'approve'], destination_root: dir
       )
       source = File.read(File.join(dir, 'app/policies/asset_policy.rb'))

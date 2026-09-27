@@ -5,8 +5,6 @@ require 'generators/writ/install/install_generator'
 require 'generators/writ/migrations/migrations_generator'
 require 'generators/writ/models/models_generator'
 require 'generators/writ/initializer/initializer_generator'
-require 'generators/writ/application_policy/application_policy_generator'
-require 'generators/writ/conditions/conditions_generator'
 require 'generators/writ/roleable/roleable_generator'
 
 RSpec.describe 'Installer orchestration' do
@@ -58,8 +56,8 @@ RSpec.describe 'Installer orchestration' do
       expect(File.read(File.join(directory, 'app/models/host/account.rb'))).to include('as_roleable')
       expect(File.read(File.join(directory, 'app/models/host/organisation.rb'))).to include('as_roleable(scoping_model: true)')
       expect(File).to exist(File.join(directory, 'app/models/authorization/permission.rb'))
-      expect(File).to exist(File.join(directory, 'app/policies/application_policy.rb'))
-      expect(File).to exist(File.join(directory, 'app/policies/concerns/conditions.rb'))
+      expect(File).not_to exist(File.join(directory, 'app/policies'))
+      expect(File).to exist(File.join(directory, 'config/writ/permissions.rb'))
       expect(File).to exist(File.join(directory, 'config/initializers/writ.rb'))
       expect(Dir[File.join(directory, 'db/migrate/*.rb')].length).to eq(8)
     end

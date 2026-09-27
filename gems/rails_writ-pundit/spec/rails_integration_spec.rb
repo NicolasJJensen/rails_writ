@@ -4,7 +4,7 @@ require 'pundit'
 
 RSpec.describe 'Rails and Pundit boundaries' do
   it 'loads policy definitions on eager boot and after real class unloading' do
-    environment = File.expand_path('../../../dummy/config/environment', __dir__)
+    environment = Rails.root.join('config/environment').to_s
     ['production', 'development'].each do |mode|
       script = <<~RUBY_CODE
         ENV['RAILS_ENV'] = #{mode.inspect}

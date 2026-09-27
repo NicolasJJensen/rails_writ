@@ -22,7 +22,7 @@ Gem::Specification.new do |spec|
   }
 
   spec.files = Dir.chdir(__dir__) do
-    Dir["lib/**/*", "app/**/*", "config/**/*", "README.md", "CHANGELOG.md", "LICENSE.txt"]
+    Dir["lib/**/*", "app/**/*", "config/**/*", "README.md", "CONTRIBUTING.md", "docs/**/*.md", "CHANGELOG.md", "LICENSE.txt"]
       .select { |f| File.file?(f) }
   end
 

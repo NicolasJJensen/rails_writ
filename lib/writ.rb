@@ -17,7 +17,6 @@ require_relative 'writ/permission_migration'
 require_relative 'writ/roleable'
 require_relative 'writ/permission_associations'
 require_relative 'writ/permission_join_validations'
-require_relative 'writ/policy_helpers'
 require_relative 'writ/engine' if defined?(Rails::Engine)
 
 # Main Writ module

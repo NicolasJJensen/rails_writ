@@ -5,7 +5,7 @@ require 'json'
 
 ##
 # Generates roles, permissions, and accessible fields from the DSL configuration
-# registered in app/policies/ via Writ::PolicyHelpers or via ConfigurationDSL.
+# registered through Writ.configure or an integration adapter.
 #
 module Writ
   class Generator

@@ -2,47 +2,91 @@
 
 [Back to README](README.md)
 
-Bug reports and pull requests are welcome on [GitHub](https://github.com/NicolasJJensen/rails_writ).
+Issues and pull requests are welcome on [GitHub](https://github.com/NicolasJJensen/rails_writ).
 
-## Development setup
+## Repository layout
 
-Install PostgreSQL and the Ruby version required by your chosen bundle, then run:
+| Location | Purpose |
+|---|---|
+| Root `lib/`, `app/`, and `rails_writ.gemspec` | Core gem |
+| `gems/rails_writ-pundit/` | Separately packaged Pundit adapter |
+| `spec/` | Core contracts, generated-host tests, and shared Rails test application |
+| `gems/rails_writ-pundit/spec/` | Adapter policy, installation, and Rails integration tests |
+
+The development bundle includes the adapter via a local path. The shared dummy app uses it. Separate subprocess tests verify core loading without Pundit, core Rails reloading, and the README workflows for both integrations and tenancy modes.
+
+## Set up the database
+
+Use Ruby 3.3 with the root Rails 7.0 bundle and a running PostgreSQL server. Configure `PGHOST`, `PGUSER`, and `PGPASSWORD` if your local defaults differ.
 
 ```sh
 bundle install
 RAILS_ENV=test bundle exec rake db:create db:migrate
-bundle exec rspec
 ```
 
-The test app uses `writ_test` in local PostgreSQL. Contract specs cover query composition, projections, custom keys/contexts, callback retries, registry rebuilding, generators, field decisions, and cleanup provenance. Host integrations should also test their own serializers, validators, and permission-source tenant isolation. Validate supported Ruby/Rails combinations before broadening version claims.
+The dummy application uses `writ_test`. Generated-host checks use temporary schemas and roll back their fixtures; do not point the suite at production data.
 
-## Compatibility checks
+## Run tests and documentation checks
 
-The CI workflow has frozen baselines for the committed root and Rails 8.1 lockfiles,
-using Ruby 3.3 and 3.4 respectively. These lockfiles include Linux platforms for CI.
-A separate fresh-resolution matrix updates dependencies for Rails 7.0/7.1/7.2/8.0/8.1
-on Ruby 3.1/3.2/3.3/3.3/3.4 respectively, with PostgreSQL. It intentionally updates even
-the Rails 8.1 lockfile within that job, without changing the committed baseline.
-These are test targets; a configured matrix is not evidence that every job has passed.
-Each job runs the full suite, including generated-host lifecycle,
-real class unloading/eager loading, and optional Pundit integration. Pundit is only a
-development dependency. Rails/Ruby minimums follow the [Rails upgrade guide](https://guides.rubyonrails.org/upgrading_ruby_on_rails.html);
-test framework versions follow [RSpec Rails compatibility guidance](https://github.com/rspec/rspec-rails).
+Run both test directories:
 
-Run an alternate bundle locally, for example:
+```sh
+bundle exec rspec spec gems/rails_writ-pundit/spec
+```
+
+`bundle exec rake` runs the same combined suite. For adapter-only iteration:
+
+```sh
+bundle exec rspec gems/rails_writ-pundit/spec
+```
+
+Check local Markdown links, anchors, and Ruby snippet syntax:
+
+```sh
+bundle exec ruby bin/check_docs
+```
+
+The suite also executes the README's actual policy/context/core-definition examples against generated models, checking permitted and denied records, fields, and proposed changes. Extend those cases when changing the documented setup contracts.
+
+## Compatibility targets
+
+CI resolves dependencies afresh for these combinations and runs the combined suite against PostgreSQL 16:
+
+| Rails | Ruby | Bundle |
+|---|---|---|
+| 7.0 | 3.1 | `gemfiles/rails_7_0.gemfile` |
+| 7.1 | 3.2 | `gemfiles/rails_7_1.gemfile` |
+| 7.2 | 3.3 | `gemfiles/rails_7_2.gemfile` |
+| 8.0 | 3.3 | `gemfiles/rails_8_0.gemfile` |
+| 8.1 | 3.4 | `gemfiles/rails_8_1.gemfile` |
+
+These are configured targets, not a claim about the latest CI outcome. Lockfiles are local and ignored. To test another bundle, select its compatible Ruby first:
 
 ```sh
 BUNDLE_GEMFILE=gemfiles/rails_8_1.gemfile bundle install
-BUNDLE_GEMFILE=gemfiles/rails_8_1.gemfile bundle exec rspec
+BUNDLE_GEMFILE=gemfiles/rails_8_1.gemfile bundle exec rspec spec gems/rails_writ-pundit/spec
 ```
 
-## Benchmarks
+Core accepts Rails components `>= 7.0, < 9.0`. The adapter requires Pundit `>= 2.5, < 3.0`. Review compatibility before widening those ranges.
 
-See [Performance and instrumentation](docs/performance.md#profiling) for the benchmark command and options.
+## Verify both packages
 
-## Compatibility policy
+```sh
+bundle exec ruby bin/check_packages
+```
 
-Runtime dependencies accept Rails components from 7.0 through 8.x (`< 9.0`). Future major
-versions require a compatibility review before widening that range. Railties remains an
-installation dependency; standalone ActiveRecord hosts can load the core without booting
-Rails. The package includes the MIT license.
+This builds both gems in a temporary directory, installs them there without downloading dependencies, checks packaged documentation links, and loads the installed core and adapter in a fresh process. Development dependencies must already be installed.
+
+For distributable files:
+
+```sh
+gem build rails_writ.gemspec
+cd gems/rails_writ-pundit
+gem build rails_writ-pundit.gemspec
+```
+
+A version change must update the relevant runtime version and gem specification; the adapter's core dependency must remain compatible. Building does not publish either package.
+
+## Benchmarks and changes
+
+See [Performance and instrumentation](docs/performance.md) for profiling commands and options. Add user-facing changes to [CHANGELOG.md](CHANGELOG.md), with upgrade steps for incompatible changes. Keep essential setup and both tenancy modes in the main README; reserve separate guides for advanced contracts.

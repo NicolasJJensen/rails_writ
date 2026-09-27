@@ -1,0 +1,47 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'bundler/setup'
+require 'rubygems/package'
+require 'rubygems/installer'
+require 'tmpdir'
+require 'open3'
+require 'pathname'
+
+root = Pathname.new(__dir__).parent
+Dir.mktmpdir('writ-packages') do |directory|
+  specs = [root.join('rails_writ.gemspec'), root.join('gems/rails_writ-pundit/rails_writ-pundit.gemspec')]
+  specs.each do |path|
+    Dir.chdir(path.dirname) do
+      spec = Gem::Specification.load(path.to_s)
+      package = File.join(directory, "#{spec.full_name}.gem")
+      Gem::Package.build(spec, false, false, package)
+      Gem::Installer.at(package, install_dir: directory, ignore_dependencies: true, wrappers: false).install
+      packaged = Gem::Package.new(package).contents
+      spec.files.grep(/\.md$/).each do |name|
+        File.read(name).scan(/\[[^\]]*\]\(([^)]+)\)/).flatten.each do |link|
+          next if link.match?(%r{\A\w+://}) || link.start_with?('#')
+          target = Pathname.new(File.dirname(name)).join(link.split('#', 2).first).cleanpath.to_s
+          abort "#{spec.name}: missing packaged document #{target}" unless packaged.include?(target)
+        end
+      end
+    end
+  end
+  Bundler.with_unbundled_env do
+    output, status = Open3.capture2e(
+      { 'GEM_HOME' => directory, 'GEM_PATH' => ([directory] + Gem.path).join(File::PATH_SEPARATOR) },
+      RbConfig.ruby, '-e', <<~'RUBY'
+        gem 'rails_writ', '= 0.2.0'
+        require 'rails_writ'
+        abort 'core loaded Pundit' if defined?(::Pundit) || defined?(Writ::Pundit)
+        abort 'core loaded policy helpers' if defined?(Writ::PolicyHelpers)
+        require 'rails_writ/pundit'
+        abort 'missing adapter' unless Writ::Pundit::Policy.instance_methods.include?(:read?)
+        abort 'checkout loaded' unless File.realpath(Gem.loaded_specs.fetch('rails_writ').full_gem_path).start_with?(File.realpath(ENV.fetch('GEM_HOME')))
+        puts 'Installed core and adapter package smoke checks passed.'
+      RUBY
+    )
+    abort output unless status.success?
+    puts output
+  end
+end

@@ -4,56 +4,6 @@ permissions:
   contents: read
 
 jobs:
-  # These combinations have committed lockfiles.
-  locked:
-    name: Locked Rails ${{ matrix.rails }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - ruby: '3.3'
-            rails: '7.0'
-            gemfile: Gemfile
-          - ruby: '3.4'
-            rails: '8.1'
-            gemfile: gemfiles/rails_8_1.gemfile
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: writ_test
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      BUNDLE_GEMFILE: ${{ matrix.gemfile }}
-      BUNDLE_FROZEN: 'true'
-      RAILS_ENV: test
-      PGHOST: localhost
-      PGUSER: postgres
-      PGPASSWORD: postgres
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: ${{ matrix.ruby }}
-          bundler-cache: true
-      - run: bundle exec rake db:migrate
-      - run: bundle exec rspec --order rand
-      - name: Standalone require and packaging
-        run: |
-          bundle exec ruby -Ilib -e 'require "rails_writ"; abort unless Writ::PermissionAssociations'
-          gem build rails_writ.gemspec
-
-  # Each supported Rails line gets an explicit fresh dependency resolution.
-  # Rails 8.1 also has a committed baseline lockfile, but this job deliberately
-  # refreshes it with bundle lock --update before installing.
   fresh-resolution:
     name: Fresh Rails ${{ matrix.rails }}
     runs-on: ubuntu-latest
@@ -107,8 +57,8 @@ jobs:
           bundle lock --update
           bundle install --jobs 4 --retry 3
       - run: bundle exec rake db:migrate
-      - run: bundle exec rspec --order rand
+      - run: bundle exec rspec spec gems/rails_writ-pundit/spec --order rand
       - name: Standalone require and packaging
         run: |
-          bundle exec ruby -Ilib -e 'require "rails_writ"; abort unless Writ::PermissionAssociations'
-          gem build rails_writ.gemspec
+          bundle exec ruby bin/check_docs
+          bundle exec ruby bin/check_packages

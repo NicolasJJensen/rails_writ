@@ -8,7 +8,7 @@ module Writ
     class InstallGenerator < Rails::Generators::Base
       include TenancyOptions
 
-      desc "Sets up writ: migrations, models, initializer, policies, and roleable injection"
+      desc "Sets up writ: migrations, models, initializer, definitions, and roleable injection"
 
       def verify_roleable_models
         required_roleable_models.each do |model_name, purpose|
@@ -29,14 +29,6 @@ module Writ
 
       def run_initializer_generator
         generate "writ:initializer", tenancy_args
-      end
-
-      def run_application_policy_generator
-        generate "writ:application_policy"
-      end
-
-      def run_conditions_generator
-        generate "writ:conditions"
       end
 
       def run_roleable_generator

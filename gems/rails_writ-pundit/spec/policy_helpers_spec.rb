@@ -2,11 +2,11 @@
 
 require 'rails_helper'
 
-RSpec.describe Writ::PolicyHelpers do
+RSpec.describe Writ::Pundit::PolicyHelpers do
   # Create a test policy class with proper singleton method definition
   let(:test_policy_class) do
     klass = Class.new do
-      include Writ::PolicyHelpers
+      include Writ::Pundit::PolicyHelpers
     end
     klass.define_singleton_method(:name) { 'TestAssetPolicy' }
     klass.define_singleton_method(:policy_model) { Asset }
@@ -47,7 +47,7 @@ RSpec.describe Writ::PolicyHelpers do
 
     it "raises NameError for unknown model by default" do
       bad_policy = Class.new do
-        include Writ::PolicyHelpers
+        include Writ::Pundit::PolicyHelpers
       end
       bad_policy.define_singleton_method(:name) { 'NonexistentModelPolicy' }
 

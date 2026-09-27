@@ -13,5 +13,5 @@ group :development do
   gem "pg", "~> 1.1"
   gem "rspec-rails", ">= 6.0", "< 9.0"
   gem "factory_bot_rails", "~> 6.2"
-  gem "pundit", "~> 2.3"
+  gem "rails_writ-pundit", path: "gems/rails_writ-pundit", require: "rails_writ/pundit"
 end

@@ -5,7 +5,7 @@ require_relative 'boot'
 require 'rails/all'
 
 Bundler.require(*Rails.groups)
-require 'rails_writ'
+require 'rails_writ/pundit'
 
 module Dummy
   class Application < Rails::Application

@@ -73,7 +73,7 @@ RSpec.describe 'CRUD field shorthand' do
 
   it 'persists policy shorthand and keeps read overrides out of writable fields' do
     stub_const('FieldShorthandPolicy', Class.new do
-      include Writ::PolicyHelpers
+      include Writ::Pundit::PolicyHelpers
       def self.policy_model
         Asset
       end

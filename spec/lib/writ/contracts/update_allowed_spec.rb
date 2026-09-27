@@ -303,7 +303,7 @@ RSpec.describe 'Update matcher definition contracts' do
 
   it 'registers matchers through the policy DSL' do
     stub_const('UpdateDslAssetPolicy', Class.new do
-      include Writ::PolicyHelpers
+      include Writ::Pundit::PolicyHelpers
       def self.policy_model
         Asset
       end

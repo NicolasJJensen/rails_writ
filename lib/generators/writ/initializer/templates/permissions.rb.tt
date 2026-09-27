@@ -1,0 +1,6 @@
+# frozen_string_literal: true
+
+# Core definitions are loaded after initialization and rebuilt on Rails reload.
+# With rails_writ-pundit, model rules can instead live in app/policies.
+Writ.configure do
+end

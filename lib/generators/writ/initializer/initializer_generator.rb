@@ -13,6 +13,7 @@ module Writ
 
       def create_initializer
         template 'initializer.rb.tt', 'config/initializers/writ.rb'
+        template 'permissions.rb.tt', 'config/writ/permissions.rb'
       end
     end
   end

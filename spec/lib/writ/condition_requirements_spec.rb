@@ -12,7 +12,7 @@ RSpec.describe 'condition requirements in policy DSL' do
 
   def policy_class(name, base: Object)
     klass = Class.new(base) do
-      include Writ::PolicyHelpers unless ancestors.include?(Writ::PolicyHelpers)
+      include Writ::Pundit::PolicyHelpers unless ancestors.include?(Writ::Pundit::PolicyHelpers)
     end
     stub_const(name, klass)
     klass.define_singleton_method(:policy_model) { Asset }

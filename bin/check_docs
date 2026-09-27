@@ -1,0 +1,37 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'pathname'
+require 'ripper'
+
+root = Pathname.new(__dir__).parent
+files = %w[README.md CONTRIBUTING.md CHANGELOG.md].map { |name| root.join(name) }
+files += root.glob('docs/*.md') + root.glob('gems/*/README.md')
+errors = []
+links = 0
+snippets = 0
+files.each do |file|
+  text = file.read
+  errors << "#{file}: unbalanced code fences" if text.scan(/^```/).length.odd?
+  text.scan(/\[[^\]]*\]\(([^)]+)\)/).flatten.each do |link|
+    next if link.match?(%r{\A\w+://})
+    links += 1
+    path, anchor = link.split('#', 2)
+    target = path.empty? ? file : file.dirname.join(path)
+    unless target.file?
+      errors << "#{file}: missing link #{link}"
+      next
+    end
+    next unless anchor
+    headings = target.read.scan(/^\#+\s+(.+)$/).flatten.map do |heading|
+      heading.downcase.gsub(/[^\w\- ]/, '').tr(' ', '-')
+    end
+    errors << "#{file}: missing anchor #{link}" unless headings.include?(anchor)
+  end
+  text.scan(/^```ruby\n(.*?)^```/m).flatten.each do |code|
+    snippets += 1
+    errors << "#{file}: invalid Ruby snippet\n#{code}" unless Ripper.sexp(code)
+  end
+end
+abort errors.join("\n") unless errors.empty?
+puts "Documentation: #{files.length} files, #{links} local links, #{snippets} Ruby snippets passed."
