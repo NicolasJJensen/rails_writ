@@ -8,7 +8,7 @@ The [main Writ README](https://github.com/NicolasJJensen/rails_writ#readme) cont
 
 ```ruby
 # Gemfile
-gem "rails_writ-pundit", "~> 0.2.0"
+gem "rails_writ-pundit"
 ```
 
 ```sh
@@ -171,7 +171,7 @@ Use `Writ::Pundit::PolicyHelpers` directly only when implementing your own polic
 
 For custom actor/tenant names, namespaces, or keys, pass the same options accepted by `writ:install` to `writ:pundit:install`. The adapter does not change the core schema or tenant ownership rules.
 
-Review an existing customized `ApplicationPolicy` before replacing it. See the main repository's upgrade guide for migrating 0.1 installations.
+Review an existing customized `ApplicationPolicy` before replacing it.
 
 ## Development and license
 

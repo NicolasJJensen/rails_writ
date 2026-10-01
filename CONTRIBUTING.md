@@ -89,4 +89,4 @@ A version change must update the relevant runtime version and gem specification;
 
 ## Benchmarks and changes
 
-See [Performance and instrumentation](docs/performance.md) for profiling commands and options. Add user-facing changes to [CHANGELOG.md](CHANGELOG.md), with upgrade steps for incompatible changes. Keep essential setup and both tenancy modes in the main README; reserve separate guides for advanced contracts.
+See [Performance and instrumentation](docs/performance.md) for profiling commands and options. Record the initial feature set under Unreleased in [CHANGELOG.md](CHANGELOG.md). Add dated release entries when versions are published. Keep essential setup and both tenancy modes in the main README; reserve separate guides for advanced contracts.

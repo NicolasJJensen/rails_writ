@@ -117,4 +117,4 @@ Permission scope and condition attachments support nested attributes, including 
 
 Changing a rule's argument schema requires migrating affected stored arguments. Nonempty arguments on a now-argumentless rule are rejected at runtime. The configured invalid-argument mode determines whether evaluation raises or excludes the affected grant.
 
-Callbacks must treat inputs as read-only. Normalized arguments are copied between evaluations. See [Upgrading](upgrading.md) for installations missing provenance columns.
+Callbacks must treat inputs as read-only. Normalized arguments are copied between evaluations.

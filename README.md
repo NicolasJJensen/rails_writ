@@ -4,7 +4,23 @@ Writ adds database-backed roles and permissions to Rails. Give users roles such 
 
 The `rails_writ` gem provides the permission system and an API for checking access. The optional `rails_writ-pundit` gem connects those checks to Pundit's policies and controller helpers.
 
-[Installation](#installation) · [Roles and permissions](#roles-and-permissions) · [Scopes](#scopes) · [Multi-tenant access](#multi-tenant-access) · [Assigning roles](#assigning-roles) · [Pundit](#pundit-integration) · [Configuration](#configuration)
+## Contents
+
+- [Installation](#installation)
+- [Roles and permissions](#roles-and-permissions)
+- [Scopes](#scopes)
+- [Multi-tenant access](#multi-tenant-access)
+- [Assigning roles](#assigning-roles)
+- [Checking access](#checking-access)
+- [Field permissions](#field-permissions)
+- [Creating and updating records](#creating-and-updating-records)
+- [Pundit integration](#pundit-integration)
+- [More complex rules](#more-complex-rules)
+- [Configuration](#configuration)
+- [Existing applications](#existing-applications)
+- [Advanced guides](#advanced-guides)
+- [Development and contributing](#development-and-contributing)
+- [License](#license)
 
 ## Installation
 
@@ -12,7 +28,7 @@ Writ requires Ruby 3.1+, Rails / ActiveRecord 7.x or 8.x, and PostgreSQL.
 
 ```ruby
 # Gemfile
-gem "rails_writ", "~> 0.2.0"
+gem "rails_writ"
 ```
 
 ```sh
@@ -616,7 +632,7 @@ Add the adapter alongside the core gem:
 
 ```ruby
 # Gemfile
-gem "rails_writ-pundit", "~> 0.2.0"
+gem "rails_writ-pundit"
 ```
 
 With the core installation above complete, generate the policy base:
@@ -836,7 +852,7 @@ Organisation.find_each do |organisation|
 end
 ```
 
-Run these through an application data migration or setup service. Changes to an existing action's scopes, conditions, arguments, or fields need a deliberate migration of the stored data. See [Permission management](docs/permission-management.md) for migration and cleanup behavior, and [Upgrading](docs/upgrading.md) for older Writ versions.
+Run these through an application data migration or setup service. Changes to an existing action's scopes, conditions, arguments, or fields need a deliberate migration of the stored data. See [Permission management](docs/permission-management.md) for migration and cleanup behavior.
 
 ## Advanced guides
 

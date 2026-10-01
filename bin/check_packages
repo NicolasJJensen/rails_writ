@@ -31,7 +31,7 @@ Dir.mktmpdir('writ-packages') do |directory|
     output, status = Open3.capture2e(
       { 'GEM_HOME' => directory, 'GEM_PATH' => ([directory] + Gem.path).join(File::PATH_SEPARATOR) },
       RbConfig.ruby, '-e', <<~'RUBY'
-        gem 'rails_writ', '= 0.2.0'
+        gem 'rails_writ', '= 0.1.0'
         require 'rails_writ'
         abort 'core loaded Pundit' if defined?(::Pundit) || defined?(Writ::Pundit)
         abort 'core loaded policy helpers' if defined?(Writ::PolicyHelpers)
