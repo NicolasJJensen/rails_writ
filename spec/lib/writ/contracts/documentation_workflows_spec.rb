@@ -6,7 +6,7 @@ require 'generators/writ/models/models_generator'
 require 'generators/writ/initializer/initializer_generator'
 
 RSpec.describe 'Documented setup workflows' do
-  %w[core pundit].each do |integration|
+  %w[core pundit_core pundit].each do |integration|
     [false, true].each do |multi_tenant|
       it "enforces records, fields and proposed state (#{integration}, tenant=#{multi_tenant})" do
         Dir.mktmpdir do |directory|

@@ -62,15 +62,15 @@ Define a parameterized condition and attach it as a template:
 ```ruby
 # config/writ/permissions.rb
 Writ.configure do
-  condition :tenant_ids, arguments: { ids: { type: :array, required: true } } do |context, arguments|
-    arguments[:ids].include?(context.organisation.id)
+  condition :tenant_ids, arguments: { ids: { type: :array, required: true } } do |_user, arguments|
+    arguments[:ids].include?(Current.organisation.id)
   end
 
   permission :read, model: Asset, role: :Member, conditions: [:tenant_ids]
 end
 ```
 
-This example uses the README's multi-tenant context and requires Asset's default tenant scope. Use it instead of declaring the same Member/read grant elsewhere.
+This example uses the README's application-owned `Current.organisation` and requires Asset's default tenant scope. Use it instead of declaring the same Member/read grant elsewhere.
 
 Disable automatic generation as shown above and supply concrete values:
 

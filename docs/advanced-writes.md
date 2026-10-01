@@ -1,6 +1,6 @@
 # Advanced write flows
 
-[README](../README.md#usage) contains the ordinary create/update examples for both tenancy modes. These additional contracts apply with either the core API or Pundit adapter.
+[README](../README.md#creating-and-updating-records) contains the ordinary create/update examples for both tenancy modes. These additional contracts apply with either the core API or Pundit adapter.
 
 ## Saved state versus proposed state
 

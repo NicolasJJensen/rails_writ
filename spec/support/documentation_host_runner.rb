@@ -2,7 +2,7 @@
 require 'active_support/all'
 require 'active_record'
 require 'rails_writ'
-require 'rails_writ/pundit' if ARGV[2] == 'pundit'
+require 'rails_writ/pundit' if ARGV[2].start_with?('pundit')
 
 directory, tenancy, integration = ARGV
 multi_tenant = tenancy == 'true'
@@ -40,20 +40,30 @@ ActiveRecord::Base.transaction do
   end
 
   snippets = File.read(File.expand_path('../../README.md', __dir__)).scan(/^```ruby\n(.*?)^```/m).flatten
-  contexts = snippets.select { |code| code.include?('class AuthorizationContext') }
-  eval(contexts.fetch(multi_tenant ? 1 : 0), TOPLEVEL_BINDING, 'README.md')
+  snippet = ->(text) { snippets.find { |code| code.include?(text) } || abort("Missing README example: #{text}") }
+  if multi_tenant
+    eval(snippet.call('class Current <'), TOPLEVEL_BINDING, 'README.md')
+    eval(snippet.call('# config/initializers/writ.rb; add to the generated settings.'), TOPLEVEL_BINDING, 'README.md')
+    eval(snippet.call('config.default_role_name = "Member"'), TOPLEVEL_BINDING, 'README.md')
+  end
+  default = snippet.call('# Replaces the Asset default_scope inside Writ.configure.')
   if integration == 'pundit'
     class ApplicationPolicy < Writ::Pundit::Policy; end
-    policies = snippets.select { |code| code.include?('class AssetPolicy') }
-    eval(policies.fetch(multi_tenant ? 1 : 0), TOPLEVEL_BINDING, 'README.md')
+    policy = snippet.call('  role :Member do')
+    policy = policy.sub('  allow_missing_default_scope', default.sub('model: Asset, ', '')) if multi_tenant
+    eval(policy, TOPLEVEL_BINDING, 'README.md')
   else
-    abort 'adapter loaded in core example' if defined?(::Pundit)
-    definitions = snippets.find { |code| code.include?('with_options model: Asset, role: :Member') }
-    definitions = definitions.sub('  allow_missing_default_scope model: Asset', '') if multi_tenant
+    abort 'adapter loaded in core example' if integration == 'core' && defined?(::Pundit)
+    definitions = snippet.call('  scope :owned, model: Asset do |user|')
+    matcher = snippet.call('# Replaces the :owned scope inside Writ.configure.')
+    fields = snippet.call('with_options model: Asset, role: :Member')
+    definitions = definitions.sub(/  scope :owned.*?^  end/m, matcher)
+    definitions = definitions.sub('  permission :read, model: Asset, role: :Member, scopes: [:owned]', fields)
+    definitions = definitions.sub('  allow_missing_default_scope model: Asset', default) if multi_tenant
     eval(definitions, TOPLEVEL_BINDING, 'README.md')
-    if multi_tenant
-      default = snippets.find { |code| code.start_with?('default_scope model: Asset') }
-      eval("Writ.configure do\n#{default}\nend", TOPLEVEL_BINDING, 'README.md')
+    if integration == 'pundit_core'
+      eval(snippet.call('class ApplicationPolicy <'), TOPLEVEL_BINDING, 'README.md')
+      eval(snippet.call("class AssetPolicy < ApplicationPolicy\nend"), TOPLEVEL_BINDING, 'README.md')
     end
   end
 
@@ -65,12 +75,21 @@ ActiveRecord::Base.transaction do
   other_organisation = Organisation.create! if multi_tenant
   Writ::Generator.generate_default_permissions unless multi_tenant
   roles = multi_tenant ? organisation.roles : Role.all
+  if multi_tenant
+    abort 'default role missing' unless organisation.default_user_role == roles.find_by!(name: 'Member')
+    abort 'role assigned implicitly' if user.roles.exists?
+  end
   user.roles << roles.find_by!(name: 'Member')
   # Holding another tenant's role must not broaden this context's grants.
   user.roles << other_organisation.roles.find_by!(name: 'Member') if multi_tenant
-  options = { user: user }
-  options[:organisation] = organisation if multi_tenant
-  context = AuthorizationContext.new(**options)
+  Current.organisation = organisation if multi_tenant
+  context = user
+  if multi_tenant
+    expected_roles = [roles.find_by!(name: 'Member').id]
+    abort 'foreign roles included' unless Writ::Configuration.role_source.call(user).pluck(:id) == expected_roles
+    permission_roles = Writ::Configuration.permission_source.call(user).distinct.pluck(:role_id)
+    abort 'foreign grants included' unless permission_roles == expected_roles
+  end
   attributes = { owner_id: user.id, name: 'Owned asset', description: 'Visible' }
   attributes[:organisation_id] = organisation.id if multi_tenant
   own = Asset.create!(attributes)
@@ -81,7 +100,7 @@ ActiveRecord::Base.transaction do
   abort 'read denied' unless access.authorization(context: context, action: :read, subject: own).allowed?
   abort 'other owner allowed' if access.authorization(context: context, action: :read, subject: other).allowed?
   abort 'foreign tenant allowed' if foreign && access.authorization(context: context, action: :read, subject: foreign).allowed?
-  if integration == 'pundit'
+  if integration.start_with?('pundit')
     abort 'adapter read' unless Pundit.authorize(context, own, :show?) == own
     abort 'adapter scope' unless Pundit.policy_scope!(context, Asset).pluck(:id) == [own.id]
   end

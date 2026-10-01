@@ -119,8 +119,8 @@ A duplicate scope, condition, or default scope raises with declaration locations
 ```ruby
 Writ.configure do
   scope :owned, model: Asset, replace: true,
-        matches: ->(context, record) { record.owner_id == context.user.id } do |context|
-    Asset.where(owner_id: context.user.id)
+        matches: ->(user, record) { record.owner_id == user.id } do |user|
+    Asset.where(owner_id: user.id)
   end
 end
 ```

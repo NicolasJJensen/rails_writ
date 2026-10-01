@@ -1,96 +1,683 @@
 # Writ
 
-Writ provides database-backed roles and permissions for Rails. Define permission defaults in Ruby, assign roles to users, and control which records and fields they can read or change. Each tenant can have its own roles and customized grants.
+Writ adds database-backed roles and permissions to Rails. Give users roles such as Member or Editor, define what each role can do, and restrict access to particular records or fields. In a multi-tenant application, each organisation owns its roles and can customize its permissions.
 
-| Gem | What it provides |
-|---|---|
-| `rails_writ` | Models, migrations, permission definitions, record filtering, conditions, field permissions, and proposed-state validation. No Pundit dependency. |
-| `rails_writ-pundit` | The recommended Rails integration: Pundit policies, policy scopes, generators, and policy loading. Depends on both Writ and Pundit. |
+The `rails_writ` gem provides the permission system and an API for checking access. The optional `rails_writ-pundit` gem connects those checks to Pundit's policies and controller helpers.
 
-The two gems are developed in this repository and packaged separately. Version 0.2 introduces this split; existing users should read [Upgrading](docs/upgrading.md).
-
-[Installation](#installation) · [Single tenant](#single-tenant-setup) · [Multi-tenant](#multi-tenant-setup) · [Usage](#usage) · [Configuration](#configuration) · [Core without Pundit](#using-the-core-without-pundit)
-
-## Requirements
-
-- Ruby 3.1+ and a compatible Rails / ActiveRecord 7.x or 8.x version.
-- PostgreSQL for the generated JSONB migrations.
-- Single-column primary keys. Integer, UUID, and custom column names are supported; composite keys are not.
-
-Writ makes authorization decisions. Your application enforces them before returning data or saving changes.
+[Installation](#installation) · [Roles and permissions](#roles-and-permissions) · [Scopes](#scopes) · [Multi-tenant access](#multi-tenant-access) · [Assigning roles](#assigning-roles) · [Pundit](#pundit-integration) · [Configuration](#configuration)
 
 ## Installation
 
-For the recommended Pundit integration, add:
+Writ requires Ruby 3.1+, Rails / ActiveRecord 7.x or 8.x, and PostgreSQL.
+
+```ruby
+# Gemfile
+gem "rails_writ", "~> 0.2.0"
+```
+
+```sh
+bundle install
+```
+
+For an application with a shared set of roles:
+
+```sh
+bin/rails generate writ:install
+```
+
+For an application where each organisation owns its roles:
+
+```sh
+bin/rails generate writ:install --multi-tenant --scoping-model=Organisation
+```
+
+Then apply the generated migrations:
+
+```sh
+bin/rails db:migrate
+```
+
+### Generated files
+
+Both installation modes create the same core files. Migration filenames have timestamp prefixes:
+
+```text
+app/models/
+  role.rb
+  permission.rb
+  scope.rb
+  permission_scope.rb
+  condition.rb
+  permission_condition.rb
+config/
+  initializers/writ.rb
+  writ/permissions.rb
+db/migrate/
+  ..._create_roles.rb
+  ..._create_permissions.rb
+  ..._create_scopes.rb
+  ..._create_permission_scopes.rb
+  ..._create_conditions.rb
+  ..._create_permission_conditions.rb
+  ..._create_join_table_roles_users.rb
+```
+
+The installer adds role membership to `User`:
+
+```ruby
+# app/models/user.rb
+class User < ApplicationRecord
+  include Writ::Roleable
+  as_roleable
+end
+```
+
+This provides `user.roles` and `user.permissions`. The generated models store the authorization data:
+
+| Model / table | Stores |
+|---|---|
+| `Role` / `roles` | Role name, description, color, and field permissions. |
+| `Permission` / `permissions` | An action on a model, belonging to a role. |
+| `Scope` / `scopes` | Names of record filters defined in Ruby. |
+| `PermissionScope` / `permission_scopes` | Filters attached to a permission, with any arguments. |
+| `Condition` / `conditions` | Names of checks defined in Ruby. |
+| `PermissionCondition` / `permission_conditions` | Checks attached to a permission, with any arguments. |
+| `roles_users` | User-to-role assignments; a user can hold several roles. |
+
+<details>
+<summary>Generated migrations</summary>
+
+These are the single-tenant migrations with the default model names, shown for Rails 7. The generator uses your Rails migration version.
+
+```ruby
+# db/migrate/..._create_roles.rb
+class CreateRoles < ActiveRecord::Migration[7.0]
+  def change
+    create_table :roles do |t|
+      t.string :name, null: false
+      t.string :description
+      t.string :color
+      t.jsonb :accessible_fields, default: {}, null: false
+      t.jsonb :generated_fields, default: {}, null: false
+
+      t.timestamps
+    end
+
+    add_index :roles, :name, unique: true, name: "roles_name"
+  end
+end
+```
+
+```ruby
+# db/migrate/..._create_permissions.rb
+class CreatePermissions < ActiveRecord::Migration[7.0]
+  def change
+    create_table :permissions do |t|
+      t.references :role, index: { name: "permissions_role" }, null: false, foreign_key: { to_table: :roles }
+      t.string :model, index: { name: "permissions_model" }, null: false
+      t.string :action, null: false
+      t.string :generated_signature
+
+      t.timestamps
+    end
+
+    add_index :permissions, [:action, :model], name: "permissions_action_model"
+    add_index :permissions, [:role_id, :action, :model], name: "permissions_role_action_model"
+  end
+end
+```
+
+```ruby
+# db/migrate/..._create_scopes.rb
+class CreateScopes < ActiveRecord::Migration[7.0]
+  def change
+    create_table :scopes do |t|
+      t.string :model, null: false
+      t.string :name, null: false
+
+      t.timestamps
+    end
+
+    add_index :scopes, [:model, :name], unique: true, name: "scopes_model_name"
+  end
+end
+```
+
+```ruby
+# db/migrate/..._create_permission_scopes.rb
+class CreatePermissionScopes < ActiveRecord::Migration[7.0]
+  def change
+    create_table :permission_scopes do |t|
+      t.references :permission, index: { name: "permission_scopes_permission" }, null: false, foreign_key: { to_table: :permissions }
+      t.references :scope, index: { name: "permission_scopes_scope" }, null: false, foreign_key: { to_table: :scopes }
+      t.jsonb :arguments, default: {}, null: false
+
+      t.timestamps
+    end
+
+    add_index :permission_scopes, [:permission_id, :scope_id], unique: true, name: "permission_scopes_pair"
+  end
+end
+```
+
+```ruby
+# db/migrate/..._create_conditions.rb
+class CreateConditions < ActiveRecord::Migration[7.0]
+  def change
+    create_table :conditions do |t|
+      t.string :name, null: false
+
+      t.timestamps
+    end
+
+    add_index :conditions, :name, unique: true, name: "conditions_name"
+  end
+end
+```
+
+```ruby
+# db/migrate/..._create_permission_conditions.rb
+class CreatePermissionConditions < ActiveRecord::Migration[7.0]
+  def change
+    create_table :permission_conditions do |t|
+      t.references :permission, index: { name: "permission_conditions_permission" }, null: false, foreign_key: { to_table: :permissions }
+      t.references :condition, index: { name: "permission_conditions_condition" }, null: false, foreign_key: { to_table: :conditions }
+      t.jsonb :arguments, default: {}, null: false
+
+      t.timestamps
+    end
+
+    add_index :permission_conditions, [:permission_id, :condition_id], unique: true, name: "permission_conditions_pair"
+  end
+end
+```
+
+```ruby
+# db/migrate/..._create_join_table_roles_users.rb
+class CreateJoinTableRolesUsers < ActiveRecord::Migration[7.0]
+  def change
+    create_table :roles_users, id: false do |t|
+      t.references :role, null: false, index: false, foreign_key: { to_table: :roles }
+      t.bigint :user_id, null: false
+      t.index [:user_id, :role_id], unique: true, name: "roles_users_actor_role"
+      t.index [:role_id, :user_id], name: "roles_users_role_actor"
+    end
+
+    add_foreign_key :roles_users, :users,
+                    column: :user_id, primary_key: "id"
+  end
+end
+```
+
+</details>
+
+The generated initializer selects the tenancy mode and authorization models. Its active settings for a single-tenant application are:
+
+```ruby
+# config/initializers/writ.rb
+Writ.configure do |config|
+  config.multi_tenant = false
+  config.role_class = "Role"
+  config.permission_class = "Permission"
+  config.scope_class = "Scope"
+  config.permission_scope_class = "PermissionScope"
+  config.condition_class = "Condition"
+  config.permission_condition_class = "PermissionCondition"
+end
+```
+
+The installer also creates an empty block for your permission definitions:
+
+```ruby
+# config/writ/permissions.rb
+Writ.configure do
+end
+```
+
+Keep settings in the initializer and model-dependent rules in `config/writ/*.rb`. Rails loads those rules after initialization and rebuilds them when application code reloads.
+
+### Multi-tenant differences
+
+With `--multi-tenant --scoping-model=Organisation`, the installer also adds:
+
+```ruby
+# app/models/organisation.rb
+class Organisation < ApplicationRecord
+  include Writ::Roleable
+  as_roleable(scoping_model: true)
+end
+```
+
+This gives each organisation its own `roles` and `permissions`, and generates those roles from your definitions when an organisation is created.
+
+The initializer uses these tenancy settings in place of `multi_tenant = false`:
+
+```ruby
+Writ.configure do |config|
+  config.multi_tenant = true
+  config.default_scoping_model = "Organisation"
+end
+```
+
+The schema changes are limited to role ownership and a reference for the organisation's default role:
+
+```ruby
+# In CreateRoles#change, inside create_table :roles:
+t.references :organisation, type: :bigint, null: false,
+             index: { name: "roles_tenant" },
+             foreign_key: { to_table: :organisations, primary_key: "id" }
+
+# Replaces the unique index on role name alone:
+add_index :roles, [:organisation_id, :name], unique: true,
+          name: "roles_tenant_name"
+```
+
+```ruby
+# db/migrate/..._add_default_role_to_organisations.rb
+class AddDefaultRoleToOrganisations < ActiveRecord::Migration[7.0]
+  def change
+    add_reference :organisations, :default_role,
+                  foreign_key: { to_table: :roles, deferrable: :deferred }
+  end
+end
+```
+
+The generated `Role` belongs to `Organisation`; `Permission` reaches its organisation through its role. The `default_role_id` column backs `organisation.default_user_role`, explained under [Default roles](#default-roles).
+
+> `User`, `Organisation`, and the records your application protects are application models. Writ adds the authorization models and associations; your application owns its tenant relationships, such as `Asset.organisation_id`. Pass `--roleable-model=Account` to use a different user model. See [custom models and keys](docs/reference.md#custom-models-namespaces-and-keys) for other generator options.
+
+## Roles and permissions
+
+A **role** groups permissions under a name, such as Member. A **permission** allows an action on a model, such as reading an Asset. Assigning the Member role to a user gives that user the role's permissions:
+
+```text
+User → Member role → read Asset permission
+```
+
+Define the initial permissions in Ruby:
+
+```ruby
+# config/writ/permissions.rb
+Writ.configure do
+  permission :read, model: Asset, role: :Member
+end
+```
+
+Here, Members can read every Asset. Users without a matching permission are denied. The standard actions are `:read`, `:create`, `:update`, and `:delete`; you can also define application actions such as `:publish`.
+
+The definitions describe the initial roles and permissions to save in the database. Once saved, those permissions can be customized per role, or per organisation in a multi-tenant application. Access checks use the saved permissions.
+
+The next sections add record restrictions to this example. Save your chosen definitions before [generating and assigning roles](#assigning-roles). For an application that already has stored roles, use [Updating existing permissions](#updating-existing-permissions) to apply definition changes.
+
+## Scopes
+
+A **scope** limits a permission to a set of records. For example, a published scope allows Members to read published assets:
+
+```ruby
+# config/writ/permissions.rb
+Writ.configure do
+  allow_missing_default_scope model: Asset
+
+  scope :published, model: Asset do
+    Asset.where(published: true)
+  end
+
+  permission :read, model: Asset, role: :Member, scopes: [:published]
+end
+```
+
+> `Asset` and its `published` column belong to your application. Writ's `scope` registers the filter; the block returns an ordinary ActiveRecord relation.
+
+This replaces the earlier unrestricted read permission. A permission without `scopes:` still allows all records within any default scope.
+
+A **default scope** is a filter applied to every permission for a model. Writ requires models with scopes to either declare that filter or explicitly opt out. Here, `allow_missing_default_scope` means Asset has no shared boundary. For tenant-owned assets, replace that exemption with the organisation filter shown below. Writ's `default_scope` is separate from ActiveRecord's model-level `default_scope`.
+
+### Using the current user
+
+Rules often need to know who is making the request. Writ calls the object supplied to an access check its **context**. Normally this is simply the current user:
+
+```ruby
+Writ::Access.authorization(subject: asset, action: :read, context: current_user)
+```
+
+Writ reads `roles` and `permissions` from that object and passes it to scope and condition blocks. The generated `User` integration already supplies both associations; no context class is required.
+
+To restrict Members to their own assets, replace the published example with:
+
+```ruby
+# config/writ/permissions.rb
+Writ.configure do
+  allow_missing_default_scope model: Asset
+
+  scope :owned, model: Asset do |user|
+    Asset.where(owner_id: user.id)
+  end
+
+  permission :read, model: Asset, role: :Member, scopes: [:owned]
+end
+```
+
+> `owner_id` is an application column referencing the user who owns an asset. The block parameter is named `user` because these examples pass a User as `context:`.
+
+Multiple scopes on one permission must all match. If a user has several permissions for an action, any one matching permission can allow access. A default scope constrains all of them.
+
+## Multi-tenant access
+
+The same role and permission definitions work for both tenancy modes. Tenant-owned data needs two additional restrictions: use only the user's roles in the selected organisation, and return only that organisation's records.
+
+This example keeps passing `current_user` to Writ and uses `Current.organisation` for the selected tenant:
+
+```ruby
+# app/models/current.rb
+class Current < ActiveSupport::CurrentAttributes
+  attribute :organisation
+end
+```
+
+> `Current` is application code, not a Writ requirement. Set `Current.organisation` through your application's authenticated tenant-selection flow before checking access. If your application already stores the selected tenant elsewhere, use that instead.
+
+Configure the sources for the user's roles and permissions:
+
+```ruby
+# config/initializers/writ.rb; add to the generated settings.
+Writ.configure do |config|
+  config.role_source = ->(user) {
+    user.roles.where(organisation_id: Current.organisation.id)
+  }
+  config.permission_source = ->(user) {
+    roles = user.roles.where(organisation_id: Current.organisation.id)
+    Permission.where(role_id: roles.select(:id))
+  }
+end
+```
+
+In `config/writ/permissions.rb`, replace `allow_missing_default_scope model: Asset` with this declaration inside the existing `Writ.configure` block:
+
+```ruby
+default_scope model: Asset do
+  Asset.where(organisation_id: Current.organisation.id)
+end
+```
+
+Keep the `:owned` scope and permission unchanged. Members can now read assets they own **within the selected organisation**. Holding a role in another organisation does not grant access here.
+
+The generator configures tenant-owned roles; it cannot infer the tenant relationship on every application model. Add a default scope for each protected tenant-owned model. A deliberately shared model, such as a global Country catalog, can use `allow_missing_default_scope` instead.
+
+## Assigning roles
+
+After defining permissions, create the initial roles.
+
+In a single-tenant application, run:
+
+```sh
+bin/rails writ:generate
+```
+
+In a multi-tenant application, new organisations receive their roles through the generated callback:
+
+```ruby
+organisation = Organisation.create!(name: "Acme")
+organisation.roles.find_by!(name: "Member")
+```
+
+> `name` is an example application attribute. Create organisations through your normal application flow with whatever attributes it requires.
+
+Assign a role when your application enrolls a user. For shared roles:
+
+```ruby
+user.roles << Role.find_by!(name: "Member")
+```
+
+For organisation-owned roles:
+
+```ruby
+user.roles << organisation.roles.find_by!(name: "Member")
+```
+
+A user can have several roles. Permissions from those roles combine, using the tenant restrictions above when configured.
+
+### Default roles
+
+An organisation's **default role** is the role your application intends to give new members. Writ stores that choice as `organisation.default_user_role`, so your invitation or sign-up flow can use it without hard-coding a role lookup.
+
+To select Member when generating a new organisation's roles, add this setting before creating organisations:
+
+```ruby
+# config/initializers/writ.rb
+Writ.configure do |config|
+  config.default_role_name = "Member"
+end
+```
+
+The name must match a role in your definitions. Your enrollment code then assigns it:
+
+```ruby
+user.roles << organisation.default_user_role
+```
+
+Writ records the default choice during role generation; your application controls when users join and receive that role. The Rails setting defaults to `"Default Role"`; if no generated role has that name, no default role is selected. Single-tenant applications can assign their chosen role directly with `Role.find_by!`, as above.
+
+## Checking access
+
+For one saved record, ask whether the user may perform an action:
+
+```ruby
+result = Writ::Access.authorization(subject: asset, action: :read, context: user)
+result.allowed? # true or false
+result.reason   # explains the decision
+```
+
+For a list, filter the relation before ordering or pagination:
+
+```ruby
+assets = Writ::Access.filter(records: Asset.all, action: :read, context: user)
+assets.order(:name).limit(20)
+```
+
+With the ownership rule, this returns the user's assets. With the tenant default scope too, it returns their assets in `Current.organisation`.
+
+Writ returns decisions; your application handles denial. For example:
+
+```ruby
+# app/errors/access_denied.rb
+class AccessDenied < StandardError; end
+```
+
+```ruby
+raise AccessDenied unless result.allowed?
+```
+
+Map that application exception to your desired response. A model class check tests whether a grant is available; use a record check to authorize a particular asset, or `filter` to obtain an allowed collection.
+
+## Field permissions
+
+Record permissions determine **which assets** a user can access. Field permissions determine **which attributes** they can read or change.
+
+Expand the Member definition with action-specific fields:
+
+```ruby
+# Inside the existing Writ.configure block; replaces the Member permission declaration.
+with_options model: Asset, role: :Member do
+  permission :read, scopes: [:owned]
+  permission :create, scopes: [:owned]
+  permission :update, scopes: [:owned]
+  accessible_fields [:name, :description], action: :read
+  accessible_fields [:name, :description], action: :create
+  accessible_fields [:name], action: :update
+end
+```
+
+Members can read `name` and `description`, provide both when creating, and change only `name` afterward.
+
+After authorizing a record, apply the readable fields when serializing it:
+
+```ruby
+fields = Writ::Access.readable_fields(context: user, record: asset)
+output = fields == :all ? asset.as_json : asset.as_json(only: fields)
+```
+
+Field queries return `:all` or an array of string names. Fields are unrestricted when no declaration exists for an action. To require explicit field declarations, set:
+
+```ruby
+# config/initializers/writ.rb
+Writ.configure do |config|
+  config.field_default = []
+end
+```
+
+Writ returns the allowed field list; your application must apply it to output and submitted attributes. Fields combine across effective roles. See the [reference](docs/reference.md) for batch lookups and field resolvers.
+
+## Creating and updating records
+
+A SQL scope checks records already in the database. Before saving a new or edited asset, Writ also needs a way to check its proposed attributes. A **matcher** is the Ruby equivalent of a scope for that purpose.
+
+Extend the existing ownership scope with `matches:`:
+
+```ruby
+# Replaces the :owned scope inside Writ.configure.
+scope :owned, model: Asset,
+      matches: ->(user, record) { record.owner_id == user.id } do |user|
+  Asset.where(owner_id: user.id)
+end
+```
+
+In a multi-tenant application, extend the default scope too:
+
+```ruby
+# Replaces the Asset default_scope inside Writ.configure.
+default_scope model: Asset, matches: ->(_user, record) {
+  record.organisation_id == Current.organisation.id
+} do
+  Asset.where(organisation_id: Current.organisation.id)
+end
+```
+
+`Writ::Access.validation` runs these matchers on the unsaved attributes. It does not save the record. Missing matchers raise by default, so a SQL restriction cannot silently disappear during a write.
+
+### Create
+
+Build ownership and tenancy from your application's authenticated state:
+
+```ruby
+asset = Asset.new(owner_id: user.id)
+```
+
+For tenant-owned assets, also set the selected organisation:
+
+```ruby
+asset = Asset.new(owner_id: user.id, organisation_id: Current.organisation.id)
+```
+
+Then apply and validate the submitted fields before saving:
+
+```ruby
+# attributes contains the submitted name/description values.
+input = attributes.stringify_keys
+raise AccessDenied unless (input.keys - %w[name description]).empty?
+asset.assign_attributes(input)
+
+fields = Writ::Access.writable_fields(context: user, record: asset, action: :create)
+raise AccessDenied unless fields == :all || (input.keys - fields).empty?
+
+result = Writ::Access.validation(subject: asset, action: :create, context: user)
+raise AccessDenied unless result.allowed?
+asset.save!
+```
+
+> `attributes`, `user`, and `AccessDenied` belong to the application. In a controller, obtain attributes with `params.require(:asset).permit(:name, :description).to_h`. Keep ownership and tenant IDs out of user-editable input.
+
+### Update
+
+First authorize the saved record and submitted fields, then check the proposed record. This sequence works for both tenancy modes:
+
+```ruby
+asset.with_lock do
+  result = Writ::Access.authorization(subject: asset, action: :update, context: user)
+  raise AccessDenied unless result.allowed?
+
+  input = attributes.stringify_keys
+  fields = Writ::Access.writable_fields(context: user, record: asset, action: :update)
+  raise AccessDenied unless fields == :all || (input.keys - fields).empty?
+
+  asset.assign_attributes(input)
+  result = Writ::Access.validation(subject: asset, action: :update, context: user)
+  raise AccessDenied unless result.allowed?
+  asset.save!
+end
+```
+
+`with_lock` locks and reloads the saved record before assignment. With the example field rules, an update containing `description` is denied. See [Advanced write flows](docs/advanced-writes.md) for nested writes, callbacks, and related-record locking.
+
+## Pundit integration
+
+`rails_writ-pundit` is the recommended integration for applications using Pundit. It connects Writ's permissions to `authorize` and `policy_scope`, using the same database schema and tenancy configuration.
+
+Add the adapter alongside the core gem:
 
 ```ruby
 # Gemfile
 gem "rails_writ-pundit", "~> 0.2.0"
 ```
 
-This installs `rails_writ` and `pundit` too. For direct core usage, add `gem "rails_writ", "~> 0.2.0"` instead and follow [Using the core without Pundit](#using-the-core-without-pundit).
+With the core installation above complete, generate the policy base:
 
 ```sh
 bundle install
+bin/rails generate writ:pundit:application_policy
 ```
-
-Choose **one** setup below. Both assume existing `User` and `Asset` models and tables. `Asset` has `name`, `description`, and `owner_id` attributes; `owner_id` references a user. The multi-tenant setup also needs `Organisation` and `organisation_id` on assets.
-
-These instructions describe the 0.2 packages in this checkout. Until they are published, use local paths in your Gemfile:
 
 ```ruby
-gem "rails_writ", path: "/path/to/rails_writ"
-gem "rails_writ-pundit", path: "/path/to/rails_writ/gems/rails_writ-pundit"
-```
-
-## Single-tenant setup
-
-Here roles are global to the application. A `Member` may read, create, and update assets they own.
-
-### 1. Generate models and configuration
-
-```sh
-bin/rails generate writ:pundit:install
-bin/rails db:migrate
-```
-
-The installer adds role membership to `User`, creates authorization tables and models, writes `config/initializers/writ.rb` and `config/writ/permissions.rb`, and creates `ApplicationPolicy < Writ::Pundit::Policy`.
-
-The initializer sets `multi_tenant = false`. Leave `config/writ/permissions.rb` empty when defining all rules in policies.
-
-### 2. Define the context
-
-Use a small context object consistently in policies and direct checks:
-
-```ruby
-# app/models/authorization_context.rb
-class AuthorizationContext
-  attr_reader :user
-
-  def initialize(user:)
-    @user = user
-  end
-
-  def roles
-    user.roles
-  end
-
-  def permissions
-    user.permissions
-  end
+# app/policies/application_policy.rb
+class ApplicationPolicy < Writ::Pundit::Policy
 end
 ```
 
-### 3. Define permissions
+To use the core rules already defined in `config/writ/permissions.rb`, add an otherwise empty policy:
+
+```ruby
+# app/policies/asset_policy.rb
+class AssetPolicy < ApplicationPolicy
+end
+```
+
+Enable the normal Pundit helpers:
+
+```ruby
+# app/controllers/application_controller.rb
+class ApplicationController < ActionController::Base
+  include Pundit::Authorization
+end
+```
+
+```ruby
+# In a controller action:
+assets = policy_scope(Asset).order(:name).limit(20)
+asset = Asset.find(params[:id])
+authorize asset, :show?
+```
+
+Pundit passes `current_user` by default. That works with the rules above in both tenancy modes; the tenant example still uses your application's `Current.organisation`.
+
+| Pundit predicate | Writ action |
+|---|---|
+| `index?`, `show?`, `read?` | `:read` |
+| `new?`, `create?` | `:create` |
+| `edit?`, `update?` | `:update` |
+| `destroy?`, `delete?` | `:delete` |
+
+`policy_scope` filters with `:read`. Predicates check authorization; for writes, also apply field permissions and call `Writ::Access.validation` as above. Pundit raises `Pundit::NotAuthorizedError` on denial; your application chooses the response.
+
+### Defining rules in policies
+
+You can move model rules from `config/writ` into policies if you prefer. The policy infers the model from its class name:
 
 ```ruby
 # app/policies/asset_policy.rb
 class AssetPolicy < ApplicationPolicy
   allow_missing_default_scope
 
-  scope :owned,
-        matches: ->(context, record) { record.owner_id == context.user.id } do |context|
-    Asset.where(owner_id: context.user.id)
+  scope :owned, matches: ->(user, record) { record.owner_id == user.id } do |user|
+    Asset.where(owner_id: user.id)
   end
 
   role :Member do
@@ -104,399 +691,58 @@ class AssetPolicy < ApplicationPolicy
 end
 ```
 
-The explicit `allow_missing_default_scope` declaration marks this model as global; scoped models otherwise require a default boundary even in single-tenant mode.
+Move these declarations out of the core definition file when using this policy. In tenant mode, replace `allow_missing_default_scope` with the same tenant `default_scope` and matcher shown earlier, omitting `model: Asset` inside the policy. Keep the tenant permission-source settings in the initializer.
 
-The SQL scope checks saved records. Its `matches:` predicate checks the attributes of a new or changed record. Keep the two equivalent.
+For a fresh installation using Pundit from the start, `writ:pundit:install` runs the core installer and creates ApplicationPolicy together. It accepts the same tenancy options. See the [adapter guide](https://github.com/NicolasJJensen/rails_writ/tree/main/gems/rails_writ-pundit) for custom predicates, shared conditions, and policy generators.
 
-### 4. Generate grants and assign a role
+## More complex rules
 
-For the initial setup, with an empty Writ role table:
+### Scope arguments
 
-```sh
-bin/rails writ:generate
-bin/rails console
-```
-
-Then assign the role to an existing user:
+Arguments let one scope implementation serve permissions with different values. For example, an Inspector role might read only assets at specified locations:
 
 ```ruby
-user = User.first!
-user.roles << Role.find_by!(name: "Member")
-context = AuthorizationContext.new(user: user)
-
-Writ::Access.filter(context: context, action: :read, records: Asset.all)
-# A relation containing only this user's assets.
-```
-
-Generation creates database grants from the definitions. It does not assign roles to users. Do not repeat initial generation after roles exist; use [Adding permissions](#adding-permissions) instead.
-
-## Multi-tenant setup
-
-Here each organisation owns its roles. A user may hold roles in several organisations, but each check uses only their roles in the selected organisation.
-
-### 1. Generate tenant-owned models and configuration
-
-Create the `User` and `Organisation` models before running:
-
-```sh
-bin/rails generate writ:pundit:install --multi-tenant --scoping-model=Organisation
-bin/rails db:migrate
-```
-
-The installer adds role membership to `User` and role ownership to `Organisation`. Keep the generated tenancy settings and add `default_role_name` if you want `Member` as the tenant default:
-
-```ruby
-# config/initializers/writ.rb, inside Writ.configure
-config.multi_tenant = true
-config.default_scoping_model = "Organisation"
-config.default_role_name = "Member"
-```
-
-The generated `as_roleable(scoping_model: true)` callback initializes permissions when an organisation is created. Setting a default role does **not** assign that role to users.
-
-### 2. Scope the context to the current tenant
-
-```ruby
-# app/models/authorization_context.rb
-class AuthorizationContext
-  attr_reader :user, :organisation
-
-  def initialize(user:, organisation:)
-    @user = user
-    @organisation = organisation
-  end
-
-  def roles
-    user.roles.where(organisation_id: organisation.id)
-  end
-
-  def permissions
-    Permission.where(role_id: roles.select(:id))
-  end
+# Add inside Writ.configure, alongside the existing scope definitions.
+scope :at_locations, model: Asset,
+      arguments: { ids: { type: :array, required: true } },
+      matches: ->(_user, record, arguments) { arguments[:ids].include?(record.location_id) } do |_user, arguments|
+  Asset.where(location_id: arguments[:ids])
 end
+
+permission :read, model: Asset, role: :Inspector,
+                 scopes: [{ at_locations: { ids: [10, 20] } }]
 ```
 
-Resolve `organisation` through your application's authenticated tenant-selection flow. The context limits grants to roles the user actually holds in that tenant. Do not use all of `organisation.roles` as the user's permission source.
+> `Asset.location_id` and the location IDs are application data. The scope definition is Ruby code; its attached argument values are stored with each permission.
 
-### 3. Define the record boundary and permissions
+A scope receives the current user first and its configured arguments second. Attach `scopes: [:owned, { at_locations: { ids: [10, 20] } }]` to require both ownership and location. A tenant default scope still applies to every permission; configure location IDs appropriate to each tenant.
+
+### Conditions
+
+A condition answers whether a permission is available for this request, rather than filtering records. For example, allow publishing only during business hours:
 
 ```ruby
-# app/policies/asset_policy.rb
-class AssetPolicy < ApplicationPolicy
-  default_scope matches: ->(context, record) {
-    record.organisation_id == context.organisation.id
-  } do |context|
-    Asset.where(organisation_id: context.organisation.id)
-  end
-
-  scope :owned,
-        matches: ->(context, record) { record.owner_id == context.user.id } do |context|
-    Asset.where(owner_id: context.user.id)
-  end
-
-  role :Member do
-    permission :read, scopes: [:owned]
-    permission :create, scopes: [:owned]
-    permission :update, scopes: [:owned]
-    accessible_fields [:name, :description], action: :read
-    accessible_fields [:name, :description], action: :create
-    accessible_fields [:name], action: :update
-  end
-end
-```
-
-The context restricts **which grants** apply. The default scope restricts **which records** those grants can reach. Its matcher enforces the same tenant boundary for proposed changes.
-
-### 4. Initialize grants and assign a tenant role
-
-After saving the definitions, new organisations receive defaults through the generated callback. For an **existing organisation with no roles**, run:
-
-```sh
-ID=42 MODEL=Organisation bin/rails writ:generate
-bin/rails console
-```
-
-Assign a role from that organisation:
-
-```ruby
-organisation = Organisation.find(42)
-user = User.first!
-user.roles << organisation.roles.find_by!(name: "Member")
-context = AuthorizationContext.new(user: user, organisation: organisation)
-
-Writ::Access.filter(context: context, action: :read, records: Asset.all)
-# Only assets owned by this user within this organisation.
-```
-
-Do not manually generate defaults again for a newly created organisation whose callback already created roles. To manage automatic generation and later changes, see [Permission management](docs/permission-management.md).
-
-## Connect Pundit to Rails
-
-Include Pundit's controller helpers and supply the context. Your authentication system must provide `current_user`.
-
-Single tenant:
-
-```ruby
-# app/controllers/application_controller.rb
-class ApplicationController < ActionController::Base
-  include Pundit::Authorization
-
-  def pundit_user
-    AuthorizationContext.new(user: current_user)
-  end
-end
-```
-
-Multi-tenant applications use the same controller integration with this method instead. `current_organisation` is the tenant selected and checked by your application:
-
-```ruby
-def pundit_user
-  AuthorizationContext.new(user: current_user, organisation: current_organisation)
-end
-```
-
-Authenticate before checking permissions. Each request must use the correct context; when changing users or tenants within the same controller instance, reset Pundit's cached context with `pundit_reset!`.
-
-## How permissions work
-
-| Concept | Meaning |
-|---|---|
-| Role | A named group of permissions assigned to a user. |
-| Permission / grant | An action on a model, optionally restricted by scopes and conditions. |
-| Scope | An ActiveRecord relation selecting permitted records. |
-| Condition | A Ruby check that decides whether a grant applies to the context. |
-| Matcher | A Ruby predicate checking proposed attributes against a scope's rule. |
-
-Scopes within one grant intersect. Separate valid grants combine to allow access. Default scopes constrain every grant. Rejecting one grant does not override a different valid grant.
-
-Ruby declarations define defaults; database grants determine the effective permissions. Editing a declaration does not overwrite customized database grants.
-
-## Usage
-
-### Authorize and filter saved records
-
-With Pundit, use `authorize` for one record and `policy_scope` for a collection:
-
-```ruby
-# Inside a controller using Pundit::Authorization
-assets = policy_scope(Asset).order(:name).limit(20)
-asset = Asset.find(params[:id])
-authorize asset, :show?
-```
-
-`show?`, `index?`, and `read?` map to `:read`; `new?` and `create?` to `:create`; `edit?` and `update?` to `:update`; `destroy?` and `delete?` to `:delete`.
-
-Direct checks work with either gem setup:
-
-```ruby
-result = Writ::Access.authorization(subject: asset, action: :read, context: context)
-result.allowed?      # true or false
-result.reason        # e.g. :granted or :no_grants
-result.denied_grants # per-grant denial details
-
-assets = Writ::Access.filter(records: Asset.all, action: :read, context: context)
-```
-
-Passing a model class checks grant availability, not access to a particular record. Filter before pagination. Authorizing a collection checks **all records before pagination**; it does not remove denied rows.
-
-### Enforce field permissions
-
-Readable/writable fields return `:all` or an array of string names. Action authorization and field enforcement are separate.
-
-After authorizing a read, serialize only allowed fields:
-
-```ruby
-fields = Writ::Access.readable_fields(context: context, record: asset)
-output = fields == :all ? asset.as_json : asset.as_json(only: fields)
-```
-
-For the example policy, read fields are `name` and `description`; update fields contain only `name`. Missing declarations default to `:all`. Set `config.field_default = []` for opt-in fields.
-
-Omitting `action:` from `accessible_fields` declares the same list for all four CRUD actions, not custom actions. A later declaration replaces the earlier list for that action. Across effective roles, field lists combine; any contributing `:all` makes the combined result unrestricted.
-
-For a page of records, batch the lookup:
-
-```ruby
-assets = Writ::Access.filter(context: context, action: :read, records: Asset.all).limit(50).to_a
-fields_by_asset = Writ::Access.fields_for_many(context: context, action: :read, records: assets)
-# { asset => ["name", "description"] }; denied records map to [].
-```
-
-### Create records
-
-Ownership and tenant attributes come from the context, not request parameters. Add the matching private helper to your controller.
-
-Single tenant:
-
-```ruby
-private
-
-def build_asset(context)
-  Asset.new(owner_id: context.user.id)
-end
-```
-
-Multi-tenant:
-
-```ruby
-private
-
-def build_asset(context)
-  Asset.new(owner_id: context.user.id, organisation_id: context.organisation.id)
-end
-```
-
-Use this public action above the controller's `private` section in either mode:
-
-```ruby
-def create
-  context = pundit_user
-  asset = build_asset(context)
-  authorize asset, :create?
-
-  attributes = params.require(:asset).permit(:name, :description).to_h
-  asset.assign_attributes(attributes)
-  fields = Writ::Access.writable_fields(context: context, record: asset, action: :create)
-  unless fields == :all || (attributes.keys - fields).empty?
-    raise Pundit::NotAuthorizedError, "Fields are not writable"
-  end
-
-  result = Writ::Access.validation(subject: asset, action: :create, context: context)
-  raise Pundit::NotAuthorizedError unless result.allowed?
-
-  asset.save!
-  head :created
-end
-```
-
-`create?` checks grant availability and conditions. `validation` checks the proposed attributes through matchers and creation validators. A SQL scope is not automatically translated into a Ruby matcher.
-
-### Update records
-
-Authorize the saved record and submitted fields before assignment, then validate proposed attributes before saving:
-
-```ruby
-def update
-  context = pundit_user
-  asset = Asset.find(params[:id])
-  attributes = params.require(:asset).permit(:name, :description).to_h
-
-  asset.with_lock do
-    authorize asset, :update?
-    fields = Writ::Access.writable_fields(context: context, record: asset, action: :update)
-    unless fields == :all || (attributes.keys - fields).empty?
-      raise Pundit::NotAuthorizedError, "Fields are not writable"
-    end
-
-    asset.assign_attributes(attributes)
-    result = Writ::Access.validation(subject: asset, action: :update, context: context)
-    raise Pundit::NotAuthorizedError unless result.allowed?
-    asset.save!
-  end
-  head :no_content
-end
-```
-
-This works with either context setup. In the example policy, submitting `description` for an update is denied. `with_lock` reloads and locks the saved record before assignment. See [Advanced write flows](docs/advanced-writes.md) for related-record locks, nested writes, and callbacks.
-
-### Conditions and custom actions
-
-Define the condition before attaching it to a permission:
-
-```ruby
-# Inside AssetPolicy
-condition :business_hours do |_context|
+# Add inside Writ.configure.
+condition :business_hours do
   (9...17).cover?(Time.current.hour)
 end
 
-role :Member do
-  permission :publish, scopes: [:owned], conditions: [:business_hours]
-end
-
-def publish?
-  permitted?(:publish)
-end
+permission :publish, model: Asset, role: :Member,
+                    scopes: [:owned], conditions: [:business_hours]
 ```
 
-Generate this new action for existing roles using the migration below. Then `authorize asset, :publish?` checks ownership, the current time, and the tenant boundary in a multi-tenant policy. Custom predicates are explicit; misspelled predicates raise `NoMethodError`.
+Every condition on a permission must pass. Condition blocks can receive the same context as scopes, and can declare an argument schema too. Check custom actions with `Writ::Access.authorization(..., action: :publish)`; the adapter guide shows how to expose them as Pundit predicates.
 
-### Adding permissions
+### Passing a custom context
 
-After adding a model/action to your definitions, apply it to existing roles. Existing grants and customized fields are preserved.
-
-Single tenant, in a Rails runner or data migration:
+The object passed as `context:` is entirely your application's choice. A User is enough for the examples above. If your application prefers to pass a user and selected tenant together, it can use a struct, an existing request object, or another suitable object:
 
 ```ruby
-Writ::Generator.add_permissions(permissions: [{ model: Asset, action: :publish }])
+RequestContext = Struct.new(:user, :organisation, keyword_init: true)
+context = RequestContext.new(user: user, organisation: organisation)
 ```
 
-Multi-tenant:
-
-```ruby
-Organisation.find_each do |organisation|
-  Writ::Generator.add_permissions(
-    organisation, permissions: [{ model: Asset, action: :publish }]
-  )
-end
-```
-
-This adds missing model/action grants. Changing scopes on an existing action requires an explicit application migration. See [Permission management](docs/permission-management.md) for cleanup and argument changes.
-
-## Configuration
-
-Keep settings in `config/initializers/writ.rb`. Put model-dependent core rules in `config/writ/*.rb`; these run after initialization and on reload. With the add-on, rules can instead live in `app/policies`. Do not declare the same rule in both places.
-
-### Common settings
-
-```ruby
-Writ.configure do |config|
-  config.multi_tenant = false # true for tenant-owned roles
-  config.field_default = []
-  config.on_missing_condition = :raise
-  config.on_condition_error = :raise
-  config.on_invalid_scope_arguments = :raise
-  config.on_invalid_condition_arguments = :raise
-  config.on_missing_default_scope = :raise
-  config.on_missing_matcher = :raise
-end
-```
-
-Keep the generated authorization model settings in that initializer too.
-
-| Setting | Default | Purpose |
-|---|---|---|
-| `multi_tenant` | Installer writes `false` or `true` | Chooses global or tenant-owned role generation. Without an explicit `false`, global generation is rejected. |
-| `default_scoping_model` | Installer writes the tenant class in tenant mode | Tenant model used by the generation task. |
-| `default_role_name` | `"Default Role"` in Rails | Marks a generated tenant role as the default; does not assign users. |
-| `field_default` | `:all` | Fields allowed when an action has no field declaration. |
-| `permission_source`, `role_source` | `context.permissions`, `context.roles` | Relations used to obtain the current actor's grants and roles. |
-
-### Error handling
-
-All six `on_*` settings above default to `:raise`.
-
-| Settings | Other modes | Meaning |
-|---|---|---|
-| Missing condition, condition error, invalid scope/condition arguments | `:deny` | Exclude the affected grant. Other valid grants still apply. |
-| Missing default scope or matcher | `:warning`, `:skip` | Continue without the missing constraint, with or without a warning. |
-
-Keep missing boundaries visible as errors unless your application deliberately accepts their absence. Models with record scopes require a default scope or an explicit model exemption in either tenancy mode.
-
-A deliberately global model can be exempted without disabling the check for others:
-
-```ruby
-# config/writ/countries.rb; Country has a boolean published column.
-Writ.configure do
-  allow_missing_default_scope model: Country
-  scope :published, model: Country do |_context|
-    Country.where(published: true)
-  end
-end
-```
-
-### Custom context sources
-
-The two setup examples implement `roles` and `permissions` directly. If your application already exposes equivalent methods with different names, configure callbacks to return those relations. For example, a context with `user` and `organisation` can be used without defining the relation methods:
+Configure where Writ finds the assigned roles and permissions:
 
 ```ruby
 Writ.configure do |config|
@@ -510,17 +756,44 @@ Writ.configure do |config|
 end
 ```
 
-For single-tenant contexts the equivalent callbacks return `context.user.roles` and `context.user.permissions`. Always use the user's assigned roles, restricted to the current tenant where applicable.
+Scope and matcher blocks receive this same object. Adapt them to read `context.user.id` and `context.organisation.id` in place of `user.id` and `Current.organisation.id`. This is an alternative to the earlier tenant-selection example.
 
-### Additional attribute checks
+With Pundit, return your chosen object from `pundit_user`. With the core API, pass it through `context:`. Neither gem requires a particular wrapper class or additional request attributes.
 
-Use model-specific validators for rules that supplement scope matchers:
+## Configuration
+
+The generated initializer holds your settings. Besides the tenancy and source settings already shown, these are the usual options:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `default_role_name` | `"Default Role"` | Selects a new organisation's default role by name. |
+| `field_default` | `:all` | Field access when no action-specific fields are declared; use `[]` for explicit opt-in. |
+| `on_missing_condition` | `:raise` | A stored permission references an undefined condition. |
+| `on_condition_error` | `:raise` | A condition raises during evaluation. |
+| `on_invalid_scope_arguments` | `:raise` | Stored scope arguments do not match their schema. |
+| `on_invalid_condition_arguments` | `:raise` | Stored condition arguments do not match their schema. |
+| `on_missing_default_scope` | `:raise` | A scoped model has no default scope or explicit exemption. |
+| `on_missing_matcher` | `:raise` | A scope has no matcher for proposed-state validation. |
+
+For example, to exclude a permission whose condition raises while leaving other valid permissions available:
 
 ```ruby
-# config/writ/asset_validators.rb; applies with or without Pundit.
+Writ.configure do |config|
+  config.on_condition_error = :deny
+end
+```
+
+Missing conditions and invalid arguments also support `:deny`. Missing default scopes and matchers instead support `:warning` or `:skip`, which continue without that constraint. Keep the default errors unless your application deliberately accepts its absence.
+
+### Additional write validators
+
+Use a validator when a proposed record needs checks beyond its scope matchers:
+
+```ruby
+# config/writ/asset_validators.rb
 Writ.configure do
   creation_validator model: Asset do |context:, record:|
-    record.owner_id == context.user.id && record.name.present?
+    record.owner_id == context.id && record.name.present?
   end
 
   update_validator model: Asset do |context:, record:|
@@ -529,114 +802,48 @@ Writ.configure do
 end
 ```
 
-Both tenancy setups use these validators; the multi-tenant default matcher also enforces `organisation_id`. Global validators run before model-specific validators, and every applicable validator must pass. They run only in `Writ::Access.validation` for their matching create/update action.
+These examples use a User as context. Validators run only through `Writ::Access.validation` for their matching create/update action. Every applicable validator must pass. See [API and advanced configuration](docs/reference.md) for additional options.
 
-## Using the core without Pundit
+## Existing applications
 
-Install only `rails_writ`. The core does not load Pundit, define policy classes, or scan `app/policies`.
+### Initializing existing organisations
 
-### Generate either tenancy mode
-
-Single tenant:
+New organisations receive defaults through their callback. To initialize an organisation created before Writ was installed, with no roles yet:
 
 ```sh
-bin/rails generate writ:install
-bin/rails db:migrate
+ID=42 MODEL=Organisation bin/rails writ:generate
 ```
 
-Multi-tenant, with existing `User` and `Organisation` models:
+Global generation likewise requires an empty role table. Generation creates initial authorization data; it does not reset an existing permission system.
 
-```sh
-bin/rails generate writ:install --multi-tenant --scoping-model=Organisation
-bin/rails db:migrate
-```
+### Updating existing permissions
 
-Use the matching `AuthorizationContext` shown in the setup sections above. Keep the generated initializer; replace the contents of `config/writ/permissions.rb` with:
+Changing Ruby permission declarations does not overwrite saved grants or tenant customizations. After adding a new model/action, apply its defaults explicitly.
+
+For shared roles:
 
 ```ruby
-Writ.configure do
-  allow_missing_default_scope model: Asset
+Writ::Generator.add_permissions(permissions: [{ model: Asset, action: :publish }])
+```
 
-  scope :owned, model: Asset,
-        matches: ->(context, record) { record.owner_id == context.user.id } do |context|
-    Asset.where(owner_id: context.user.id)
-  end
+For organisation-owned roles:
 
-  with_options model: Asset, role: :Member do
-    permission :read, scopes: [:owned]
-    permission :create, scopes: [:owned]
-    permission :update, scopes: [:owned]
-    accessible_fields [:name, :description], action: :read
-    accessible_fields [:name, :description], action: :create
-    accessible_fields [:name], action: :update
-  end
+```ruby
+Organisation.find_each do |organisation|
+  Writ::Generator.add_permissions(
+    organisation, permissions: [{ model: Asset, action: :publish }]
+  )
 end
 ```
 
-For **multi-tenant** use, remove `allow_missing_default_scope model: Asset` and add this default scope inside that `Writ.configure` block:
-
-```ruby
-default_scope model: Asset, matches: ->(context, record) {
-  record.organisation_id == context.organisation.id
-} do |context|
-  Asset.where(organisation_id: context.organisation.id)
-end
-```
-
-Generate defaults and assign roles exactly as in the corresponding setup section: `bin/rails writ:generate` for global roles; `ID=42 MODEL=Organisation bin/rails writ:generate` for an existing tenant with no roles. New tenants use the generated callback.
-
-### Enforce decisions directly
-
-Use an application-owned exception or response for denial; Pundit is not required:
-
-```ruby
-# app/errors/access_denied.rb
-class AccessDenied < StandardError; end
-```
-
-```ruby
-# Inside an application service; context is the matching AuthorizationContext.
-asset.with_lock do
-  result = Writ::Access.authorization(subject: asset, action: :update, context: context)
-  raise AccessDenied unless result.allowed?
-
-  fields = Writ::Access.writable_fields(context: context, record: asset, action: :update)
-  attributes = attributes.stringify_keys
-  raise AccessDenied unless fields == :all || (attributes.keys - fields).empty?
-
-  asset.assign_attributes(attributes)
-  result = Writ::Access.validation(subject: asset, action: :update, context: context)
-  raise AccessDenied unless result.allowed?
-  asset.save!
-end
-```
-
-For creation, use the matching `build_asset(context)` helper from [Create records](#create-records), then check the proposed record directly:
-
-```ruby
-asset = build_asset(context)
-input = attributes.stringify_keys
-raise AccessDenied unless (input.keys - %w[name description]).empty?
-asset.assign_attributes(input)
-
-fields = Writ::Access.writable_fields(context: context, record: asset, action: :create)
-raise AccessDenied unless fields == :all || (input.keys - fields).empty?
-
-result = Writ::Access.validation(subject: asset, action: :create, context: context)
-raise AccessDenied unless result.allowed?
-asset.save!
-```
-
-This works for both tenancy modes with the corresponding helper and context. Filtering and readable fields use the same `Writ::Access` calls shown above.
+Run these through an application data migration or setup service. Changes to an existing action's scopes, conditions, arguments, or fields need a deliberate migration of the stored data. See [Permission management](docs/permission-management.md) for migration and cleanup behavior, and [Upgrading](docs/upgrading.md) for older Writ versions.
 
 ## Advanced guides
 
-- [API and advanced configuration](docs/reference.md): query contracts, custom models/keys, rule arguments, field resolvers, STI, and reloading.
-- [Permission management](docs/permission-management.md): generation, migrations, tenant arguments, and cleanup.
+- [API and advanced configuration](docs/reference.md): query contracts, custom models and keys, field resolvers, STI, and reloading.
+- [Permission management](docs/permission-management.md): stored grants, tenant-specific arguments, migrations, and cleanup.
 - [Advanced write flows](docs/advanced-writes.md): nested records, callbacks, concurrency, and transitions.
 - [Performance and instrumentation](docs/performance.md): batch costs, notifications, and profiling.
-- [Upgrading](docs/upgrading.md): the gem split and schema checks for older installations.
-- [Pundit adapter](https://github.com/NicolasJJensen/rails_writ/tree/main/gems/rails_writ-pundit): adapter-specific setup and policy behavior.
 
 ## Development and contributing
 

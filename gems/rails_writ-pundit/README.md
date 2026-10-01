@@ -15,19 +15,31 @@ gem "rails_writ-pundit", "~> 0.2.0"
 bundle install
 ```
 
-These are the 0.2 packages; until published, use the local paths documented in the main README. Ruby 3.1+, a compatible Rails 7.x/8.x version, and PostgreSQL are required for the generated setup.
+Ruby 3.1+, a compatible Rails 7.x/8.x version, and PostgreSQL are required for the generated setup.
 
-## Single-tenant setup
+## Setup
 
-With an existing `User` model:
+If Writ's core models and configuration are already installed, add only the policy base:
+
+```sh
+bin/rails generate writ:pundit:application_policy
+```
+
+For a fresh application, the combined installer creates the core setup and policy base together. Use the ordinary installer for shared roles:
 
 ```sh
 bin/rails generate writ:pundit:install
 bin/rails db:migrate
-bin/rails generate writ:pundit:policy Asset --roles Member --actions read
 ```
 
-The installer creates core models/configuration and this base policy:
+For organisation-owned roles, use the tenant options:
+
+```sh
+bin/rails generate writ:pundit:install --multi-tenant --scoping-model=Organisation
+bin/rails db:migrate
+```
+
+Both create:
 
 ```ruby
 # app/policies/application_policy.rb
@@ -35,9 +47,22 @@ class ApplicationPolicy < Writ::Pundit::Policy
 end
 ```
 
-For an existing `Asset` with `owner_id`, replace the generated Asset policy with:
+The [main README](https://github.com/NicolasJJensen/rails_writ#installation) shows every generated file, the migration changes, and how to define and assign roles in either tenancy mode.
+
+## Policies
+
+If your rules already live in `config/writ/*.rb`, an empty policy connects them to Pundit:
 
 ```ruby
+# app/policies/asset_policy.rb
+class AssetPolicy < ApplicationPolicy
+end
+```
+
+Alternatively, define the rules in the policy. This example gives Members read access to their own assets:
+
+```ruby
+# app/policies/asset_policy.rb
 class AssetPolicy < ApplicationPolicy
   allow_missing_default_scope
 
@@ -52,88 +77,24 @@ class AssetPolicy < ApplicationPolicy
 end
 ```
 
-Generate global defaults once, while the role table is empty:
+> `Asset`, `owner_id`, and `name` are application code and attributes. The policy infers its model from `AssetPolicy`. Move these rules out of `config/writ` when declaring them here.
 
-```sh
-bin/rails writ:generate
-bin/rails console
-```
+For tenant-owned assets, replace `allow_missing_default_scope` with:
 
 ```ruby
-user = User.first!
-user.roles << Role.find_by!(name: "Member")
-Pundit.policy_scope!(user, Asset)
-# Only assets owned by this user.
-```
-
-## Multi-tenant setup
-
-With existing `User`, `Organisation`, and `Asset` models, where Asset has `organisation_id`:
-
-```sh
-bin/rails generate writ:pundit:install --multi-tenant --scoping-model=Organisation
-bin/rails db:migrate
-```
-
-Use a context that exposes only the user's roles within the selected organisation:
-
-```ruby
-# app/models/authorization_context.rb
-class AuthorizationContext
-  attr_reader :user, :organisation
-
-  def initialize(user:, organisation:)
-    @user, @organisation = user, organisation
-  end
-
-  def roles
-    user.roles.where(organisation_id: organisation.id)
-  end
-
-  def permissions
-    Permission.where(role_id: roles.select(:id))
-  end
+# Inside AssetPolicy
+default_scope matches: ->(_user, record) {
+  record.organisation_id == Current.organisation.id
+} do
+  Asset.where(organisation_id: Current.organisation.id)
 end
 ```
 
-```ruby
-# app/policies/asset_policy.rb
-class AssetPolicy < ApplicationPolicy
-  default_scope matches: ->(context, record) {
-    record.organisation_id == context.organisation.id
-  } do |context|
-    Asset.where(organisation_id: context.organisation.id)
-  end
-
-  role :Member do
-    permission :read
-    accessible_fields [:name], action: :read
-  end
-end
-```
-
-Here Members may read assets in their organisation. Add an ownership scope when that additional restriction is required.
-
-New organisations receive defaults through the generated callback. For an existing organisation with no roles:
-
-```sh
-ID=42 MODEL=Organisation bin/rails writ:generate
-bin/rails console
-```
-
-```ruby
-organisation = Organisation.find(42)
-user = User.first!
-user.roles << organisation.roles.find_by!(name: "Member")
-context = AuthorizationContext.new(user: user, organisation: organisation)
-Pundit.policy_scope!(context, Asset)
-```
-
-The application must authenticate the user and select an authorized tenant. Do not pass all tenant roles as the user's permission source. Default generation never assigns user membership.
+This uses the main README's [multi-tenant setup](https://github.com/NicolasJJensen/rails_writ#multi-tenant-access), including its tenant-filtered role and permission sources. `Current.organisation` belongs to the application. Keep the ownership scope and role declarations unchanged.
 
 ## Controller integration
 
-For the single-tenant example above, Pundit uses `current_user` automatically:
+Pundit uses `current_user` automatically:
 
 ```ruby
 class ApplicationController < ActionController::Base
@@ -141,25 +102,15 @@ class ApplicationController < ActionController::Base
 end
 ```
 
-For the multi-tenant example, override its context. `current_organisation` must come from your application's tenant-selection flow:
-
-```ruby
-class ApplicationController < ActionController::Base
-  include Pundit::Authorization
-
-  def pundit_user
-    AuthorizationContext.new(user: current_user, organisation: current_organisation)
-  end
-end
-```
-
-Then use normal Pundit entry points:
+Use the normal entry points:
 
 ```ruby
 assets = policy_scope(Asset).order(:name).limit(20)
 asset = Asset.find(params[:id])
 authorize asset, :show?
 ```
+
+This works in both tenancy modes with the matching Writ configuration. There is no required context wrapper. If your application uses a custom Pundit context, return it from `pundit_user` and configure Writ's sources and rule blocks to use that object, as described in the [custom context example](https://github.com/NicolasJJensen/rails_writ#passing-a-custom-context).
 
 The policy scope filters on `:read`. `authorize` raises `Pundit::NotAuthorizedError` on denial; configure your application's response handling. If the user or tenant changes within a controller instance, call `pundit_reset!` before reusing Pundit's helpers.
 
@@ -219,12 +170,6 @@ The adapter loads `app/policies` during Writ registry rebuilds, after core `conf
 Use `Writ::Pundit::PolicyHelpers` directly only when implementing your own policy base. The ready-made `Writ::Pundit::Policy` supplies predicates and `Scope#resolve`.
 
 For custom actor/tenant names, namespaces, or keys, pass the same options accepted by `writ:install` to `writ:pundit:install`. The adapter does not change the core schema or tenant ownership rules.
-
-If core is already installed, generate only the base policy:
-
-```sh
-bin/rails generate writ:pundit:application_policy
-```
 
 Review an existing customized `ApplicationPolicy` before replacing it. See the main repository's upgrade guide for migrating 0.1 installations.
 
