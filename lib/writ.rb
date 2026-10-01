@@ -26,8 +26,10 @@ module Writ
   # the block is already the ConfigurationDSL instance; no block parameter needed.
   # @example
   #   Writ.configure do
-  #     scope :service_industry, model: Asset do |context|
-  #       Asset.joins(:service_industries).where(service_industries: { id: context.service_industry_ids })
+  #     scope :service_industry, model: Asset do
+  #       query do |context:|
+  #         Asset.joins(:service_industries).where(service_industries: { id: context.service_industry_ids })
+  #       end
   #     end
   #   end
   def self.configure(&block)

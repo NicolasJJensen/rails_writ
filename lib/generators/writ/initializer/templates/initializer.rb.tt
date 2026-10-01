@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 Writ.configure do |config|
-  config.multi_tenant = <%= multi_tenant? %>
 <%- if multi_tenant? -%>
-  config.default_scoping_model = <%= scoping_model_name.inspect %>
+  config.scoping_model = <%= scoping_model_name.inspect %>
+  config.tenant_source = ->(context) { Current.<%= scoping_association %> }
 <%- end -%>
 <%- %w[Role Permission Scope PermissionScope Condition PermissionCondition].each do |name| -%>
   config.<%= name.underscore %>_class = <%= model_class_name(name).inspect %>
@@ -23,7 +23,7 @@ Writ.configure do |config|
   # config.on_missing_matcher = :raise
 <%- if multi_tenant? -%>
 
-  # The current context must expose roles and permissions for its tenant.
+  # Writ selects the current tenant's roles from the actor's assigned roles.
   # Default roles are generated for new tenants, but user assignment is explicit.
   # config.default_role_name = 'Member'
 <%- end -%>

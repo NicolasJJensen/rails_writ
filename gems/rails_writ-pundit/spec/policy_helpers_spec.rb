@@ -17,11 +17,11 @@ RSpec.describe Writ::Pundit::PolicyHelpers do
 
   before do
     allow(Writ::Configuration).to receive(:registry).and_return(test_registry)
-    allow(Writ::Configuration).to receive(:register_scope) do |model_name:, scope_name:, arguments: {}, matches: nil, replace: false, declaration_location: nil, &block|
-      test_registry.register_scope(model_name: model_name, scope_name: scope_name, arguments: arguments, matches: matches, replace: replace, declaration_location: declaration_location, &block)
+    allow(Writ::Configuration).to receive(:register_scope) do |model_name:, scope_name:, arguments: {}, matches: nil, validate: nil, replace: false, declaration_location: nil, &block|
+      test_registry.register_scope(model_name: model_name, scope_name: scope_name, arguments: arguments, matches: matches, validate: validate, replace: replace, declaration_location: declaration_location, &block)
     end
-    allow(Writ::Configuration).to receive(:register_default_scope) do |model_name:, matches: nil, replace: false, declaration_location: nil, &block|
-      test_registry.register_default_scope(model_name: model_name, matches: matches, replace: replace, declaration_location: declaration_location, &block)
+    allow(Writ::Configuration).to receive(:register_default_scope) do |model_name:, matches: nil, validate: nil, replace: false, declaration_location: nil, &block|
+      test_registry.register_default_scope(model_name: model_name, matches: matches, validate: validate, replace: replace, declaration_location: declaration_location, &block)
     end
     allow(Writ::Configuration).to receive(:register_condition) do |name:, arguments: {}, replace: false, declaration_location: nil, &block|
       test_registry.register_condition(name: name, arguments: arguments, replace: replace, declaration_location: declaration_location, &block)
@@ -130,30 +130,30 @@ RSpec.describe Writ::Pundit::PolicyHelpers do
 
   describe ".scope and .default_scope delegation (TEST-13)" do
     it "delegates scope to the internal ConfigurationDSL" do
-      test_policy_class.scope(:delegated_test_scope) { Asset.all }
+      test_policy_class.scope(:delegated_test_scope) { query { Asset.all } }
       expect(test_registry.scope_callable_registered?(model_name: 'Asset', scope_name: 'delegated_test_scope')).to be true
     end
 
     it "delegates default_scope to the internal ConfigurationDSL" do
-      test_policy_class.default_scope { Asset.all }
+      test_policy_class.default_scope { query { Asset.all } }
       expect(test_registry.default_scope_registered?(model_name: 'Asset')).to be true
     end
 
     it "allows a policy to explicitly replace a scope, default scope, or condition" do
-      test_policy_class.scope(:visible) { Asset.all }
-      test_policy_class.default_scope { Asset.all }
+      test_policy_class.scope(:visible) { query { Asset.all } }
+      test_policy_class.default_scope { query { Asset.all } }
       test_policy_class.condition(:active) { |_context| true }
 
-      expect { test_policy_class.scope(:visible, replace: true) { Asset.none } }.not_to raise_error
-      expect { test_policy_class.default_scope(replace: true) { Asset.none } }.not_to raise_error
+      expect { test_policy_class.scope(:visible, replace: true) { query { Asset.none } } }.not_to raise_error
+      expect { test_policy_class.default_scope(replace: true) { query { Asset.none } } }.not_to raise_error
       expect { test_policy_class.condition(:active, replace: true) { |_context| false } }.not_to raise_error
     end
 
     it "reports both policy declaration locations for a duplicate scope" do
-      test_policy_class.scope(:visible) { Asset.all }
+      test_policy_class.scope(:visible) { query { Asset.all } }
 
       error = begin
-        test_policy_class.scope(:visible) { Asset.none }
+        test_policy_class.scope(:visible) { query { Asset.none } }
       rescue Writ::ConfigurationError => exception
         exception
       end
@@ -163,11 +163,11 @@ RSpec.describe Writ::Pundit::PolicyHelpers do
     end
 
     it "rejects duplicate default scopes and conditions from policies" do
-      test_policy_class.default_scope { Asset.all }
+      test_policy_class.default_scope { query { Asset.all } }
       test_policy_class.condition(:active) { |_context| true }
 
       expect {
-        test_policy_class.default_scope { Asset.none }
+        test_policy_class.default_scope { query { Asset.none } }
       }.to raise_error(Writ::ConfigurationError, /default_scope on 'Asset'/)
       expect {
         test_policy_class.condition(:active) { |_context| false }
@@ -176,7 +176,7 @@ RSpec.describe Writ::Pundit::PolicyHelpers do
 
     it "allows a policy to exempt its model from the default scope requirement" do
       test_policy_class.allow_missing_default_scope
-      test_policy_class.scope(:visible) { Asset.all }
+      test_policy_class.scope(:visible) { query { Asset.all } }
       original_mode = Writ::Configuration.on_missing_default_scope
       Writ::Configuration.on_missing_default_scope = :raise
 
@@ -189,7 +189,7 @@ RSpec.describe Writ::Pundit::PolicyHelpers do
       test_policy_class.allow_missing_default_scope
       test_registry.clear!
       test_policy_class.allow_missing_default_scope
-      test_policy_class.scope(:visible) { Asset.all }
+      test_policy_class.scope(:visible) { query { Asset.all } }
       original_mode = Writ::Configuration.on_missing_default_scope
       Writ::Configuration.on_missing_default_scope = :raise
 

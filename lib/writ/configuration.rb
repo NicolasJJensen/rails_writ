@@ -3,7 +3,50 @@
 module Writ
   class Configuration
     class << self
-      attr_accessor :default_role_name, :default_scoping_model, :multi_tenant
+      attr_accessor :default_role_name, :multi_tenant, :tenant_source
+      attr_reader :scoping_model
+
+      def scoping_model=(value)
+        unless value.nil? || (value.is_a?(String) && value.present?) || (value.is_a?(Class) && value < ActiveRecord::Base && value.name)
+          raise ArgumentError, 'scoping_model must be an ActiveRecord model class, a constant name, or nil'
+        end
+        @scoping_model = value.is_a?(Class) ? value.name : value
+      end
+
+      alias_method :default_scoping_model, :scoping_model
+      alias_method :default_scoping_model=, :scoping_model=
+
+      def multi_tenant?
+        scoping_model.present? || multi_tenant == true
+      end
+
+      def scoping_model_class
+        return unless scoping_model
+        model = scoping_model.constantize
+        unless model.is_a?(Class) && model < ActiveRecord::Base
+          raise ConfigurationError, 'scoping_model must identify an ActiveRecord model class'
+        end
+        model
+      rescue NameError
+        raise ConfigurationError, "Writ could not find the #{scoping_model} tenant model. Configure scoping_model with a constant name."
+      end
+
+      def tenant_for(context)
+        return unless multi_tenant?
+        unless tenant_source.respond_to?(:call)
+          raise ConfigurationError, 'Configure tenant_source to return the current persisted tenant'
+        end
+        tenant = tenant_source.call(context)
+        validate_tenant!(tenant)
+      end
+
+      def validate_tenant!(tenant)
+        model = scoping_model_class
+        unless model && tenant.is_a?(model) && tenant.respond_to?(:persisted?) && tenant.persisted?
+          raise ConfigurationError, "Expected a persisted #{scoping_model || 'configured scoping_model'} tenant"
+        end
+        tenant
+      end
       attr_writer :logger
 
       def logger
@@ -179,12 +222,31 @@ module Writ
 
       def permissions_for(context)
         return permission_source.call(context) if permission_source
+        return permission_class.where(role: tenant_roles_for(context)) if multi_tenant?
         context.permissions if context.respond_to?(:permissions)
       end
 
       def roles_for(context)
         return role_source.call(context) if role_source
+        return tenant_roles_for(context) if multi_tenant?
         context.roles if context.respond_to?(:roles)
+      end
+
+      def tenant_roles_for(context)
+        tenant = tenant_for(context)
+        return role_class.none unless context.respond_to?(:roles)
+        unless tenant.respond_to?(:roles)
+          raise ConfigurationError, 'The tenant must expose an association to the configured role_class'
+        end
+
+        assigned_roles = context.roles
+        tenant_roles = tenant.roles
+        unless assigned_roles.is_a?(ActiveRecord::Relation) && assigned_roles.klass == role_class &&
+               tenant_roles.is_a?(ActiveRecord::Relation) && tenant_roles.klass == role_class
+          raise ConfigurationError, 'The actor and tenant must expose associations to the configured role_class'
+        end
+        key = role_class.primary_key
+        assigned_roles.where(key => tenant_roles.select(key))
       end
 
       def rebuild!
@@ -262,12 +324,12 @@ module Writ
         Thread.current[:writ_building_registry] || (@registry ||= Writ::Logic::Registry.new)
       end
 
-      def register_scope(model_name:, scope_name:, arguments: {}, matches: nil, replace: false, declaration_location: nil, &block)
-        registry.register_scope(model_name: model_name, scope_name: scope_name, arguments: arguments, matches: matches, replace: replace, declaration_location: declaration_location || direct_declaration_location, &block)
+      def register_scope(model_name:, scope_name:, arguments: {}, matches: nil, validate: nil, replace: false, declaration_location: nil, &block)
+        registry.register_scope(model_name: model_name, scope_name: scope_name, arguments: arguments, matches: matches, validate: validate, replace: replace, declaration_location: declaration_location || direct_declaration_location, &block)
       end
 
-      def register_default_scope(model_name:, matches: nil, replace: false, declaration_location: nil, &block)
-        registry.register_default_scope(model_name: model_name, matches: matches, replace: replace, declaration_location: declaration_location || direct_declaration_location, &block)
+      def register_default_scope(model_name:, matches: nil, validate: nil, replace: false, declaration_location: nil, &block)
+        registry.register_default_scope(model_name: model_name, matches: matches, validate: validate, replace: replace, declaration_location: declaration_location || direct_declaration_location, &block)
       end
 
       def register_condition(name:, arguments: {}, replace: false, declaration_location: nil, &block)

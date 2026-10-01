@@ -20,11 +20,11 @@ RSpec.describe Writ::DSL::ConfigurationDSL do
     # (populated by policy files at boot) is never cleared. Without this, tests
     # running after this spec in random order would fail with MissingScopeError.
     allow(configuration).to receive(:registry).and_return(test_registry)
-    allow(configuration).to receive(:register_scope) do |model_name:, scope_name:, arguments: {}, matches: nil, replace: false, declaration_location: nil, &block|
-      test_registry.register_scope(model_name: model_name, arguments: arguments, scope_name: scope_name, matches: matches, replace: replace, declaration_location: declaration_location, &block)
+    allow(configuration).to receive(:register_scope) do |model_name:, scope_name:, arguments: {}, matches: nil, validate: nil, replace: false, declaration_location: nil, &block|
+      test_registry.register_scope(model_name: model_name, arguments: arguments, scope_name: scope_name, matches: matches, validate: validate, replace: replace, declaration_location: declaration_location, &block)
     end
-    allow(configuration).to receive(:register_default_scope) do |model_name:, matches: nil, replace: false, declaration_location: nil, &block|
-      test_registry.register_default_scope(model_name: model_name, matches: matches, replace: replace, declaration_location: declaration_location, &block)
+    allow(configuration).to receive(:register_default_scope) do |model_name:, matches: nil, validate: nil, replace: false, declaration_location: nil, &block|
+      test_registry.register_default_scope(model_name: model_name, matches: matches, validate: validate, replace: replace, declaration_location: declaration_location, &block)
     end
     allow(configuration).to receive(:register_condition) do |name:, arguments: {}, replace: false, declaration_location: nil, &block|
       test_registry.register_condition(name: name, arguments: arguments, replace: replace, declaration_location: declaration_location, &block)
@@ -169,14 +169,14 @@ RSpec.describe Writ::DSL::ConfigurationDSL do
   describe "#with_options" do
     it "inherits model from enclosing block" do
       dsl.with_options(model: Asset) do
-        scope(:test_inherited) { Asset.all }
+        scope(:test_inherited) { query { Asset.all } }
       end
       expect(test_registry.scope_callable_registered?(model_name: 'Asset', scope_name: 'test_inherited')).to be true
     end
 
     it "supports block-argument style (do |c|)" do
       dsl.with_options(model: Asset) do |c|
-        c.scope(:arg_style_scope) { Asset.all }
+        c.scope(:arg_style_scope) { query { Asset.all } }
       end
       expect(test_registry.scope_callable_registered?(model_name: 'Asset', scope_name: 'arg_style_scope')).to be true
     end
@@ -225,7 +225,7 @@ RSpec.describe Writ::DSL::ConfigurationDSL do
       # Stack should be restored — can still use DSL normally
       expect {
         dsl.with_options(model: Asset) do
-          scope(:recovery_scope) { Asset.all }
+          scope(:recovery_scope) { query { Asset.all } }
         end
       }.not_to raise_error
 
@@ -247,7 +247,7 @@ RSpec.describe Writ::DSL::ConfigurationDSL do
 
       # Stack should still be intact — subsequent calls work normally
       dsl.with_options(model: Asset) do
-        scope(:after_no_block) { Asset.all }
+        scope(:after_no_block) { query { Asset.all } }
       end
       expect(test_registry.scope_callable_registered?(model_name: 'Asset', scope_name: 'after_no_block')).to be true
     end
@@ -287,12 +287,12 @@ RSpec.describe Writ::DSL::ConfigurationDSL do
 
   describe "#default_scope" do
     it "registers a default scope for the model" do
-      dsl.default_scope(model: Asset) { Asset.all }
+      dsl.default_scope(model: Asset) { query { Asset.all } }
       expect(test_registry.default_scope_registered?(model_name: 'Asset')).to be true
     end
 
     it "requires model" do
-      expect { dsl.default_scope { Asset.all } }.to raise_error(ArgumentError, /model: required/)
+      expect { dsl.default_scope { query { Asset.all } } }.to raise_error(ArgumentError, /model: required/)
     end
 
     it "requires a block" do
@@ -300,25 +300,25 @@ RSpec.describe Writ::DSL::ConfigurationDSL do
     end
 
     it "passes replace to the default scope registration" do
-      dsl.default_scope(model: Asset) { Asset.all }
-      expect { dsl.default_scope(model: Asset, replace: true) { Asset.none } }.not_to raise_error
+      dsl.default_scope(model: Asset) { query { Asset.all } }
+      expect { dsl.default_scope(model: Asset, replace: true) { query { Asset.none } } }.not_to raise_error
     end
   end
 
   describe "declaration replacement" do
     it "passes replace to scope and condition registrations" do
-      dsl.scope(:visible, model: Asset) { Asset.all }
+      dsl.scope(:visible, model: Asset) { query { Asset.all } }
       dsl.condition(:active) { |_context| true }
 
-      expect { dsl.scope(:visible, model: Asset, replace: true) { Asset.none } }.not_to raise_error
+      expect { dsl.scope(:visible, model: Asset, replace: true) { query { Asset.none } } }.not_to raise_error
       expect { dsl.condition(:active, replace: true) { |_context| false } }.not_to raise_error
     end
 
     it "reports both configure declaration locations for a duplicate scope" do
-      dsl.scope(:visible, model: Asset) { Asset.all }
+      dsl.scope(:visible, model: Asset) { query { Asset.all } }
 
       error = begin
-        dsl.scope(:visible, model: Asset) { Asset.none }
+        dsl.scope(:visible, model: Asset) { query { Asset.none } }
       rescue Writ::ConfigurationError => exception
         exception
       end
@@ -329,6 +329,7 @@ RSpec.describe Writ::DSL::ConfigurationDSL do
   end
 
   describe "#allow_missing_default_scope" do
+    before { allow(configuration).to receive(:multi_tenant?).and_return(true) }
     it "registers a per-model exemption" do
       dsl.allow_missing_default_scope(model: Asset)
 

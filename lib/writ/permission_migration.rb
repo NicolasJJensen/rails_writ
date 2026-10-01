@@ -12,9 +12,7 @@ module Writ
     end
 
     def apply
-      if @tenant.nil? && Configuration.multi_tenant != false
-        raise ConfigurationError, 'Pass a tenant record or configure multi_tenant = false'
-      end
+      Generator.validate_tenant_for_generation!(@tenant)
       Configuration.role_class.transaction do
         @defaults.each do |name, data|
           grants = data[:permissions].select { |grant| @selection.include?([grant[:model], grant[:action].to_s]) }

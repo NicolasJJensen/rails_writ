@@ -10,11 +10,11 @@
 | `authorization` with a saved record | Checks saved SQL membership. |
 | `authorization` with a relation or array | Every record must be allowed. Empty collections pass. |
 | `authorization` with a new record and `:create` | Checks create-grant availability; does not validate proposed attributes. |
-| `validation` with a new record and `:create` | Checks conditions, matchers, and creation validators. |
+| `validation` with a new record and `:create` | Checks conditions, scope validators, and creation validators. |
 | `validation` with a persisted record and `:update` | Checks proposed attributes and update validators. Primary keys must be unchanged. |
 | `filter` with a model or relation | Returns a lazy relation containing allowed records. |
 
-`validation` also accepts arrays, with an empty array allowed. It rejects model classes and relations. Persisted records may use read/delete/custom actions for local matcher checks; lifecycle validators apply only to their matching create/update actions.
+`validation` also accepts arrays, with an empty array allowed. It rejects model classes and relations. Persisted records may use read/delete/custom actions for local scope checks; lifecycle validators apply only to their matching create/update actions.
 
 `grant_available?` ignores record scopes. Use it for potential navigation/action availability, never as permission to access a particular record. `potential_permissions` and `declared_fields` are metadata, not record authorization.
 
@@ -29,9 +29,9 @@ else
 end
 ```
 
-Results are immutable. Each denied grant exposes `permission_id`, `reason`, and `failed_conditions`. Success has an empty `denied_grants` array.
+Results are immutable. Each denied grant exposes `permission_id`, `reason`, `failed_conditions`, and immutable `errors` snapshots. Proposed results expose final `errors`; `apply_errors_to(record)` imports them without removing unrelated errors. Success has an empty `denied_grants` array.
 
-Reasons include `:no_permission_source`, `:no_grants`, `:scope_mismatch`, `:proposed_scope_mismatch`, `:validator_rejected`, `:condition_error`, `:missing_condition`, `:condition_arguments_invalid`, and `:scope_arguments_invalid`. A configuration error can raise instead of returning a denial, according to the README's failure settings.
+Reasons include `:no_permission_source`, `:no_grants`, `:scope_mismatch`, `:proposed_scope_mismatch`, `:validator_rejected`, `:condition_error`, `:missing_condition`, `:condition_arguments_invalid`, and `:scope_arguments_invalid`. A configuration error can raise instead of returning a denial, according to the failure modes below.
 
 Applications own messages, translations, and HTTP responses. Avoid logging sensitive context or stored arguments indiscriminately.
 
@@ -93,24 +93,24 @@ Loaded model table names are respected; unloaded models use demodulized conventi
 
 ## Parameterized rules
 
-This example assumes an `Asset.location_id` column. It adds a location restriction to the ownership/tenant boundaries your application already defines:
+The README explains [scope arguments](../README.md#scope-arguments), including equivalent query and proposed-record checks. Conditions accept an `arguments:` schema and a positional `(context, arguments)` block:
 
 ```ruby
 Writ.configure do
-  scope :at_locations, model: Asset,
-        arguments: { ids: { type: :array, required: true } },
-        matches: ->(_context, record, arguments) { arguments[:ids].include?(record.location_id) } do |_context, arguments|
-    Asset.where(location_id: arguments[:ids])
+  condition :allowed_hours, arguments: { hours: { type: :array, required: true } } do |_user, arguments|
+    arguments.fetch(:hours).include?(Time.current.hour)
   end
 
-  permission :read, model: Asset, role: :Inspector,
-                   scopes: [:owned, { at_locations: { ids: [10, 20] } }]
+  permission :read, model: Asset, role: :Member,
+                   conditions: [{ allowed_hours: { hours: [9, 10, 11] } }]
 end
 ```
 
-In single-tenant mode, those IDs apply to global role defaults. In multi-tenant mode, a default tenant scope must still constrain records; tenant-specific arguments must be supplied through deliberate tenant configuration rather than shared global IDs.
+Conditions apply identically to global and tenant roles. Tenant record boundaries still belong in default scopes. For arguments supplied during tenant generation, see [Permission management](permission-management.md#tenant-specific-condition-arguments).
 
-Conditions also accept an `arguments:` schema and a `(context, arguments)` block. Nonparameterized scope/condition blocks can take zero arguments or the context alone. Register implementations with blocks, not a `callable:` option. For per-tenant condition templates, see [Permission management](permission-management.md#tenant-specific-condition-arguments).
+Scope `query` callbacks accept optional `context:` and `arguments:` keywords. Scope `validate` callbacks receive `(record, errors)` plus either keyword when needed. Declare only the inputs you use. The high-level declaration block contains these callbacks; it does not execute a database query during registration.
+
+Low-level `register_scope` and `register_default_scope` retain positional SQL callbacks and optional boolean `matches:` callbacks. Explicit high-level `matches:` declarations also remain supported. Use the named `query` / `validate` form for new definitions.
 
 ## Registration and replacement
 
@@ -118,16 +118,18 @@ A duplicate scope, condition, or default scope raises with declaration locations
 
 ```ruby
 Writ.configure do
-  scope :owned, model: Asset, replace: true,
-        matches: ->(user, record) { record.owner_id == user.id } do |user|
-    Asset.where(owner_id: user.id)
+  scope :owned, model: Asset, replace: true do
+    query { |context:| Asset.where(owner_id: context.id) }
+    validate do |asset, errors, context:|
+      errors.add(:owner_id, :not_permitted, message: "must belong to you") unless asset.owner_id == context.id
+    end
   end
 end
 ```
 
 `with_options` shares `model`, `role`, `scopes`, and `conditions` within a block. `with_conditions` attaches requirements to permissions in its block. The adapter additionally supports inherited `requires_conditions`; see its README.
 
-Hook signatures are checked at registration. Field resolvers accept `context:`, `action:`, `record:`, and `fields:`; create/update validators accept `context:` and `record:`. Optional keywords, keyword rest arguments, or one positional hash are supported. Invalid signatures raise `ArgumentError`.
+Hook signatures are checked at registration. Field resolvers accept `context:`, `action:`, `record:`, and `fields:`; create/update validators accept `context:` and `record:`, with explicit `errors:` selecting error-collection behavior. Optional keywords, keyword rest arguments, or one positional hash are supported. Invalid signatures raise `ArgumentError`.
 
 ## Dynamic field resolvers
 
@@ -183,3 +185,28 @@ load "config/writ/permissions.rb"
 ```
 
 Core model concerns are available without booting Rails. Configure custom authorization class names before including concerns. Standalone applications own definition loading and reloading. Railties remains an installation dependency, but Pundit does not.
+
+## Tenant sources and compatibility settings
+
+`scoping_model` accepts a model class or its constant name. Writ stores the name so Rails reloads resolve the current class. A configured model enables tenant mode. `tenant_source` receives the access-check context and must return a persisted instance of that model. Missing callbacks, nil tenants, wrong model types, and unsaved/destroyed tenants raise `Writ::ConfigurationError`.
+
+The default role source intersects the actor's assigned roles with the tenant's roles. The default permission source uses that same tenant-filtered assignment set. This respects the generated associations' custom keys. Explicit `role_source` and `permission_source` callbacks override their respective lookups independently and are responsible for their own tenant restrictions.
+
+The earlier `default_scoping_model` name remains an alias for `scoping_model`; `multi_tenant = true` also enables tenant mode. These settings are retained for custom integrations, but the generated setup uses `scoping_model` plus `tenant_source`. Setting `multi_tenant = false` does not disable a configured tenant model.
+
+## Failure modes
+
+All modes below default to `:raise`:
+
+| Setting | Alternatives | Effect |
+|---|---|---|
+| `on_missing_condition` | `:deny` | Excludes a permission referring to an unknown condition. |
+| `on_condition_error` | `:deny` | Excludes a permission whose condition raised. |
+| `on_invalid_scope_arguments` | `:deny` | Excludes a grant with malformed stored scope arguments. |
+| `on_invalid_condition_arguments` | `:deny` | Excludes a grant with malformed stored condition arguments. |
+| `on_missing_default_scope` | `:warning`, `:skip` | Permits registration without the otherwise-required tenant boundary. |
+| `on_missing_matcher` | `:warning`, `:skip` | Omits a proposed-state constraint that lacks a validator/matcher. |
+
+`:deny` logs and excludes the affected grant; another valid grant can still authorize. `:warning` logs before omitting the missing constraint, while `:skip` omits it silently. Neither constructs a missing boundary or proposed validator. Scope query/validator exceptions propagate.
+
+Invalid configuration is distinct from a valid proposal being denied. For example, a malformed stored scope argument is not a user field-validation error.

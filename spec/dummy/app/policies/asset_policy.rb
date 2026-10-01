@@ -12,7 +12,9 @@ class AssetPolicy < ApplicationPolicy
   # ============================================
 
   default_scope do
-    Asset.where(organisation: Current.organisation)
+    query do
+      Asset.where(organisation: Current.organisation)
+    end
   end
 
   # ============================================
@@ -21,22 +23,30 @@ class AssetPolicy < ApplicationPolicy
   # Descriptions are in config/locales/writ.en.yml
 
   scope :service_industry do
-    Asset.joins(:service_industries)
-         .where(service_industries: { id: Current.user.service_industries })
+    query do
+      Asset.joins(:service_industries)
+           .where(service_industries: { id: Current.user.service_industries })
+    end
   end
 
   scope :current_location do
-    current_location_id = Current.user.check_ins.where(finish: nil).order(start: :desc).limit(1).select(:location_id)
-    Asset.where(location: current_location_id)
+    query do
+      current_location_id = Current.user.check_ins.where(finish: nil).order(start: :desc).limit(1).select(:location_id)
+      Asset.where(location: current_location_id)
+    end
   end
 
   scope :created do
-    # Note: Asset model doesn't have created_by_id field yet
-    Asset.none
+    query do
+      # Note: Asset model doesn't have created_by_id field yet
+      Asset.none
+    end
   end
 
   scope :status_active do
-    Asset.where(status: :satisfactory)
+    query do
+      Asset.where(status: :satisfactory)
+    end
   end
 
   # ============================================

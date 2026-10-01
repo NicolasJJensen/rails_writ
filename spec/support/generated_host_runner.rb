@@ -18,6 +18,9 @@ ActiveRecord::Base.establish_connection(ENV.fetch('DATABASE_URL', 'postgresql://
 class ApplicationRecord < ActiveRecord::Base
   self.abstract_class = true
 end
+class Current < ActiveSupport::CurrentAttributes
+  attribute :organisation
+end
 ActiveRecord::Base.belongs_to_required_by_default = true
 
 def host_model(name, table, primary_key = nil)
@@ -59,11 +62,13 @@ ActiveRecord::Base.transaction do
     tenant.as_roleable(scoping_model: true, auto_generate: false)
   end
   owner = tenant&.create!(custom_keys ? { tenant_key => SecureRandom.uuid } : {})
+  Current.organisation = owner
   user = actor.create!(custom_keys ? { actor_key => SecureRandom.uuid } : { id: 5_000_000_000 })
   actor_id = user.public_send(actor.primary_key)
   own = document.create!(name: 'own', owner_id: actor_id)
   document.create!(name: 'other', owner_id: custom_keys ? SecureRandom.uuid : user.id + 1)
   Writ.configure do
+    allow_missing_default_scope model: document
     scope(:mine, model: document) { |context| document.where(owner_id: context.id) }
     permission :read, model: document, role: 'Reader', scopes: [:mine]
     accessible_fields [:name], model: document, role: 'Reader', action: :read
@@ -83,6 +88,16 @@ ActiveRecord::Base.transaction do
   raise 'missing nested scope inverse' unless nested.permission_scopes.first.permission.equal?(nested)
   raise 'missing nested condition inverse' unless nested.permission_conditions.first.permission.equal?(nested)
   user.roles << role
+  if owner
+    other_owner = tenant.create!(custom_keys ? { tenant_key => SecureRandom.uuid } : {})
+    foreign_role = other_owner.roles.create!(name: 'Foreign')
+    foreign_role.permissions.create!(model: 'Document', action: 'read')
+    user.roles << foreign_role
+    raise 'foreign role included' unless Writ::Configuration.roles_for(user).pluck(:id) == [role.id]
+    raise 'foreign permission included' if Writ::Configuration.permissions_for(user).where(role_id: foreign_role.id).exists?
+    foreign_role.destroy!
+    other_owner.destroy!
+  end
   access = Writ::Access
   raise 'wrong authorization' unless access.filter(context: user, action: :read, records: document).pluck(:id) == [own.id]
   raise 'wrong fields' unless access.readable_fields(context: user, record: own) == ['name']

@@ -42,27 +42,26 @@ ActiveRecord::Base.transaction do
   snippets = File.read(File.expand_path('../../README.md', __dir__)).scan(/^```ruby\n(.*?)^```/m).flatten
   snippet = ->(text) { snippets.find { |code| code.include?(text) } || abort("Missing README example: #{text}") }
   if multi_tenant
-    eval(snippet.call('class Current <'), TOPLEVEL_BINDING, 'README.md')
-    eval(snippet.call('# config/initializers/writ.rb; add to the generated settings.'), TOPLEVEL_BINDING, 'README.md')
+    class Current < ActiveSupport::CurrentAttributes
+      attribute :organisation
+    end
+    eval(snippet.call('config.scoping_model = "Organisation"'), TOPLEVEL_BINDING, 'README.md')
     eval(snippet.call('config.default_role_name = "Member"'), TOPLEVEL_BINDING, 'README.md')
   end
-  default = snippet.call('# Replaces the Asset default_scope inside Writ.configure.')
+  default = snippet.call('default_scope model: Asset do')
   if integration == 'pundit'
     class ApplicationPolicy < Writ::Pundit::Policy; end
     policy = snippet.call('  role :Member do')
-    policy = policy.sub('  allow_missing_default_scope', default.sub('model: Asset, ', '')) if multi_tenant
+    policy = policy.sub('  role :Member do', default.sub('model: Asset ', '') + "\n  role :Member do") if multi_tenant
     eval(policy, TOPLEVEL_BINDING, 'README.md')
   else
     abort 'adapter loaded in core example' if integration == 'core' && defined?(::Pundit)
-    definitions = snippet.call('  scope :owned, model: Asset do |user|')
-    matcher = snippet.call('# Replaces the :owned scope inside Writ.configure.')
-    fields = snippet.call('with_options model: Asset, role: :Member')
-    definitions = definitions.sub(/  scope :owned.*?^  end/m, matcher)
-    definitions = definitions.sub('  permission :read, model: Asset, role: :Member, scopes: [:owned]', fields)
-    definitions = definitions.sub('  allow_missing_default_scope model: Asset', default) if multi_tenant
-    eval(definitions, TOPLEVEL_BINDING, 'README.md')
+    definitions = "Writ.configure do\n" + snippet.call('scope :owned, model: Asset do') +
+                  snippet.call('with_options model: Asset, role: :Member')
+    definitions += default if multi_tenant
+    eval(definitions + "\nend", TOPLEVEL_BINDING, 'README.md')
     if integration == 'pundit_core'
-      eval(snippet.call('class ApplicationPolicy <'), TOPLEVEL_BINDING, 'README.md')
+      class ApplicationPolicy < Writ::Pundit::Policy; end
       eval(snippet.call("class AssetPolicy < ApplicationPolicy\nend"), TOPLEVEL_BINDING, 'README.md')
     end
   end
@@ -86,8 +85,8 @@ ActiveRecord::Base.transaction do
   context = user
   if multi_tenant
     expected_roles = [roles.find_by!(name: 'Member').id]
-    abort 'foreign roles included' unless Writ::Configuration.role_source.call(user).pluck(:id) == expected_roles
-    permission_roles = Writ::Configuration.permission_source.call(user).distinct.pluck(:role_id)
+    abort 'foreign roles included' unless Writ::Configuration.roles_for(user).pluck(:id) == expected_roles
+    permission_roles = Writ::Configuration.permissions_for(user).distinct.pluck(:role_id)
     abort 'foreign grants included' unless permission_roles == expected_roles
   end
   attributes = { owner_id: user.id, name: 'Owned asset', description: 'Visible' }

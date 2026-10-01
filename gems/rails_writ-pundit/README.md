@@ -1,10 +1,22 @@
 # Writ for Pundit
 
-`rails_writ-pundit` connects Writ's database-backed permissions to Pundit. It provides `Writ::Pundit::Policy`, policy generators, and Rails policy loading. Installing it also installs `rails_writ` and `pundit`.
+`rails_writ-pundit` connects Writ's stored roles and permissions to Pundit's policies, Strong Parameters, and controller helpers. It depends on `rails_writ` and `pundit`.
 
-The [main Writ README](https://github.com/NicolasJJensen/rails_writ#readme) contains complete single-tenant and multi-tenant application examples, configuration, field enforcement, and create/update flows. This README covers the adapter itself.
+The [main README](https://github.com/NicolasJJensen/rails_writ#readme) covers basic setup, permissions, single-tenant and multi-tenant configuration, and complete create/update examples. This guide covers adapter customization.
 
-## Install
+## Contents
+
+- [Installation](#installation)
+- [Policies](#policies)
+- [Controller helpers](#controller-helpers)
+- [Nested parameters](#nested-parameters)
+- [Custom actions](#custom-actions)
+- [Shared conditions](#shared-conditions)
+- [Loading and context](#loading-and-context)
+
+## Installation
+
+After the core setup:
 
 ```ruby
 # Gemfile
@@ -13,88 +25,68 @@ gem "rails_writ-pundit"
 
 ```sh
 bundle install
-```
-
-Ruby 3.1+, a compatible Rails 7.x/8.x version, and PostgreSQL are required for the generated setup.
-
-## Setup
-
-If Writ's core models and configuration are already installed, add only the policy base:
-
-```sh
 bin/rails generate writ:pundit:application_policy
 ```
 
-For a fresh application, the combined installer creates the core setup and policy base together. Use the ordinary installer for shared roles:
+For a fresh application, the combined installer creates the core setup and policy base:
 
 ```sh
 bin/rails generate writ:pundit:install
 bin/rails db:migrate
 ```
 
-For organisation-owned roles, use the tenant options:
+For organisation-owned roles:
 
 ```sh
 bin/rails generate writ:pundit:install --multi-tenant --scoping-model=Organisation
 bin/rails db:migrate
 ```
 
-Both create:
+Both modes use:
 
 ```ruby
-# app/policies/application_policy.rb
 class ApplicationPolicy < Writ::Pundit::Policy
 end
 ```
 
-The [main README](https://github.com/NicolasJJensen/rails_writ#installation) shows every generated file, the migration changes, and how to define and assign roles in either tenancy mode.
+Review an existing customized policy base before replacing it. The adapter uses the core's schema and tenant configuration.
 
 ## Policies
 
-If your rules already live in `config/writ/*.rb`, an empty policy connects them to Pundit:
+When definitions live in `config/writ/*.rb`, an empty policy connects them to Pundit:
 
 ```ruby
-# app/policies/asset_policy.rb
 class AssetPolicy < ApplicationPolicy
 end
 ```
 
-Alternatively, define the rules in the policy. This example gives Members read access to their own assets:
+Alternatively, put definitions in policies. The policy infers its model:
 
 ```ruby
-# app/policies/asset_policy.rb
 class AssetPolicy < ApplicationPolicy
-  allow_missing_default_scope
-
-  scope :owned, matches: ->(user, record) { record.owner_id == user.id } do |user|
-    Asset.where(owner_id: user.id)
+  scope :owned do
+    query { |context:| Asset.where(owner_id: context.id) }
+    validate do |asset, errors, context:|
+      errors.add(:owner_id, :not_permitted, message: "must belong to you") unless asset.owner_id == context.id
+    end
   end
 
   role :Member do
     permission :read, scopes: [:owned]
-    accessible_fields [:name], action: :read
+    permission :create, scopes: [:owned]
+    permission :update, scopes: [:owned]
+    accessible_fields [:name, :description], action: :read
+    accessible_fields [:name, :description], action: :create
+    accessible_fields [:name], action: :update
   end
 end
 ```
 
-> `Asset`, `owner_id`, and `name` are application code and attributes. The policy infers its model from `AssetPolicy`. Move these rules out of `config/writ` when declaring them here.
+For tenant-owned records, also define the [default tenant scope](https://github.com/NicolasJJensen/rails_writ#default-scopes-and-tenants), omitting `model:` inside the policy. Put each declaration in one place.
 
-For tenant-owned assets, replace `allow_missing_default_scope` with:
+## Controller helpers
 
-```ruby
-# Inside AssetPolicy
-default_scope matches: ->(_user, record) {
-  record.organisation_id == Current.organisation.id
-} do
-  Asset.where(organisation_id: Current.organisation.id)
-end
-```
-
-This uses the main README's [multi-tenant setup](https://github.com/NicolasJJensen/rails_writ#multi-tenant-access), including its tenant-filtered role and permission sources. `Current.organisation` belongs to the application. Keep the ownership scope and role declarations unchanged.
-
-## Controller integration
-
-Pundit uses `current_user` automatically:
+Include the usual Pundit module:
 
 ```ruby
 class ApplicationController < ActionController::Base
@@ -102,35 +94,58 @@ class ApplicationController < ActionController::Base
 end
 ```
 
-Use the normal entry points:
+| Helper | Behavior |
+|---|---|
+| `policy_scope(Asset)` | Filters the saved relation using `:read`. |
+| `authorize @asset, :update?` | Checks saved access; create checks grant availability. |
+| `permitted_attributes(@asset)` | Reads Pundit's parameter root and permits the policy's field list. |
+| `authorize_proposed!(@asset)` | Checks dirty fields and proposed scope/lifecycle rules. |
+| `authorize_proposed!(@asset, attributes: input)` | Assigns input, then checks all supplied keys and proposed rules. |
+
+The proposed helper is available automatically, including when Pundit was already included before the adapter loaded. It does not save or replace ordinary `authorize`. It infers `:create`/`:update` from the record; `action:` overrides that inference.
+
+Omitted `attributes:` uses `changed_attribute_names_to_save`. Explicit `{}` means no submitted fields. Unpermitted `ActionController::Parameters` are rejected by Rails assignment. The policy hooks `permitted_attributes_for_create` and `permitted_attributes_for_update` use Writ's candidate fields; `:all` expands to model attribute names, not `permit!`.
+
+A proposed failure raises `Writ::Pundit::ProposedAuthorizationError` with `record` and `result`, and attaches final errors to the record. Missing authority raises ordinary `Pundit::NotAuthorizedError`. See the main README for [HTML, Turbo, and JSON error handling](https://github.com/NicolasJJensen/rails_writ#rendering-errors).
+
+## Nested parameters
+
+Pundit normally reads `params.require(:asset)` for an Asset. To change the request envelope, override its hook in your controller:
 
 ```ruby
-assets = policy_scope(Asset).order(:name).limit(20)
-asset = Asset.find(params[:id])
-authorize asset, :show?
+def pundit_params_for(record)
+  params.require(:data).require(Pundit::PolicyFinder.new(record).param_key)
+end
 ```
 
-This works in both tenancy modes with the matching Writ configuration. There is no required context wrapper. If your application uses a custom Pundit context, return it from `pundit_user` and configure Writ's sources and rule blocks to use that object, as described in the [custom context example](https://github.com/NicolasJJensen/rails_writ#passing-a-custom-context).
+Stored field names do not describe nested Strong Parameters structures. If an allowed field needs a schema, replace that entry in the policy's result:
 
-The policy scope filters on `:read`. `authorize` raises `Pundit::NotAuthorizedError` on denial; configure your application's response handling. If the user or tenant changes within a controller instance, call `pundit_reset!` before reusing Pundit's helpers.
+```ruby
+# Inside AssetPolicy; the role's create fields must include :tags.
+def permitted_attributes_for_create
+  super.map { |field| field == :tags ? { tags: [] } : field }
+end
+```
 
-## Policy behavior
+For nested attributes, supply an explicit allowlist such as `{ attachments_attributes: [:id, :caption] }` only when that field is allowed. Authorize associated records separately; permitting a nested shape does not authorize its records or make pending association changes supported by proposed validation.
 
-| Predicate | Writ action |
+## Custom actions
+
+Built-in predicates map as follows:
+
+| Predicates | Action |
 |---|---|
 | `index?`, `show?`, `read?` | `:read` |
 | `new?`, `create?` | `:create` |
 | `edit?`, `update?` | `:update` |
 | `destroy?`, `delete?` | `:delete` |
 
-Predicates use `Writ::Access.authorization`. They do **not** run proposed-state validation or enforce field lists. For creates and updates, also enforce writable fields and call `Writ::Access.validation` before saving. Complete implementations are in the main README.
-
-Custom actions require explicit methods:
+Add explicit methods for other actions:
 
 ```ruby
 # Inside AssetPolicy
 role :Member do
-  permission :publish
+  permission :publish, scopes: [:owned]
 end
 
 def publish?
@@ -138,19 +153,17 @@ def publish?
 end
 ```
 
-In multi-tenant mode the default scope still applies. In a single-tenant application add any ownership scope required by the action. Migrate the new action into existing roles before using it.
-
-The generator can emit custom predicates:
+The generator can emit these predicates:
 
 ```sh
 bin/rails generate writ:pundit:policy Asset --roles Member --actions read publish
 ```
 
-Unknown predicates raise `NoMethodError`. Generated action names must not collide with CRUD aliases (`index`, `show`, `new`, `edit`, `destroy`), `permitted`, or inherited Ruby predicates such as `respond_to` and `is_a`.
+Unknown predicates raise `NoMethodError`. The policy generator rejects action names that collide with CRUD aliases, `permitted`, or inherited Ruby predicates. Apply new defaults to existing stored roles before using them.
 
 ## Shared conditions
 
-You do not need an empty Conditions concern. Define a shared condition on the base policy before requiring it:
+Define shared conditions before requiring them on descendant permissions:
 
 ```ruby
 class ApplicationPolicy < Writ::Pundit::Policy
@@ -161,18 +174,14 @@ class ApplicationPolicy < Writ::Pundit::Policy
 end
 ```
 
-This attaches the condition to descendant permissions. `requires_conditions` must precede local permission declarations. Alternatively, `with_conditions :business_hours do ... end` applies only to its enclosed declarations. Requirements are additive and deduplicated; conflicting argument declarations raise.
+`requires_conditions` must precede local permission declarations. `with_conditions :business_hours do ... end` limits the requirement to its block. Requirements combine and deduplicate; conflicting arguments raise.
 
-## Loading and customization
+## Loading and context
 
-The adapter loads `app/policies` during Writ registry rebuilds, after core `config/writ/*.rb` definitions. Rails reloads rebuild both against current model classes. Avoid declaring the same scope/condition in both places.
+The adapter loads `app/policies` during Writ registry rebuilds, after `config/writ/*.rb`. Reloads rebuild both against current model classes.
 
-Use `Writ::Pundit::PolicyHelpers` directly only when implementing your own policy base. The ready-made `Writ::Pundit::Policy` supplies predicates and `Scope#resolve`.
+Pundit uses `current_user` by default. Override `pundit_user` for an application-specific context and configure Writ's sources accordingly. Tenant applications normally only need `scoping_model`, `tenant_source`, and default scopes. If the user or tenant changes within a controller instance, call `pundit_reset!` before reusing cached Pundit objects.
 
-For custom actor/tenant names, namespaces, or keys, pass the same options accepted by `writ:install` to `writ:pundit:install`. The adapter does not change the core schema or tenant ownership rules.
+Use `Writ::Pundit::PolicyHelpers` directly only when implementing a custom policy base; the ready-made `Policy` supplies predicates and `Scope#resolve`.
 
-Review an existing customized `ApplicationPolicy` before replacing it.
-
-## Development and license
-
-Both packages are tested from the repository root; see its contribution guide for the commands. The adapter uses the [MIT License](LICENSE.txt).
+Both packages are tested from the repository root. The adapter uses the [MIT License](LICENSE.txt).

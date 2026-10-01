@@ -8,7 +8,9 @@ class UserPolicy < ApplicationPolicy
   # ============================================
 
   default_scope do
-    User.where(organisation: Current.organisation)
+    query do
+      User.where(organisation: Current.organisation)
+    end
   end
 
   # ============================================
@@ -16,12 +18,16 @@ class UserPolicy < ApplicationPolicy
   # ============================================
 
   scope :at_current_location do
-    location = Current.user&.current_location
-    location ? User.at_location(location.id) : User.none
+    query do
+      location = Current.user&.current_location
+      location ? User.at_location(location.id) : User.none
+    end
   end
 
   scope :managed_by do
-    User.managed_by(Current.user)
+    query do
+      User.managed_by(Current.user)
+    end
   end
 
   # ============================================

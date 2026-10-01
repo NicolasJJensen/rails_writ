@@ -45,7 +45,7 @@ module Writ
       #   registry.register_scope(model_name: 'Asset', scope_name: 'service_industry') do |context|
       #     Asset.joins(:service_industries).where(service_industries: { id: context.service_industries })
       #   end
-      def register_scope(model_name:, scope_name:, arguments: {}, matches: nil, replace: false, declaration_location: nil, &block)
+      def register_scope(model_name:, scope_name:, arguments: {}, matches: nil, validate: nil, replace: false, declaration_location: nil, &block)
         source_location = declaration_location || caller_location
         unless scope_name.to_s.match?(Writ::NAME_FORMAT)
           raise ArgumentError,
@@ -62,6 +62,7 @@ module Writ
               "Must provide a block for scope '#{scope_name}' on '#{model_name}'" unless resolved
         validate_callable_arity!(resolved, scope_name, model_name, has_arguments: arguments.any?)
 
+        validate_callable!(validate, 'scope validator') if validate
         validate_matcher!(matches, arguments.any? ? 3 : 2)
         model_key = model_name.to_s
         scope_key = scope_name.to_s
@@ -74,6 +75,7 @@ module Writ
           callable: resolved,
           arguments: arguments,
           matches: matches,
+          validate: validate,
           declaration_location: source_location
         }
         resolved
@@ -88,7 +90,7 @@ module Writ
       #   registry.register_default_scope(model_name: 'Asset') do |context|
       #     Asset.where(organisation: context.organisation)
       #   end
-      def register_default_scope(model_name:, matches: nil, replace: false, declaration_location: nil, &block)
+      def register_default_scope(model_name:, matches: nil, validate: nil, replace: false, declaration_location: nil, &block)
         source_location = declaration_location || caller_location
         resolved = block
         raise Writ::InvalidScopeError,
@@ -99,10 +101,12 @@ module Writ
         existing = @default_scope_definitions[model_key]
         # Explicit replacement prevents a later policy from silently changing a shared access boundary.
         reject_duplicate_declaration!("default_scope on '#{model_key}'", existing, replace, source_location) if existing
+        validate_callable!(validate, 'default scope validator') if validate
         validate_matcher!(matches, 2)
         @default_scope_definitions[model_key] = {
           callable: resolved,
           matches: matches,
+          validate: validate,
           declaration_location: source_location
         }
       end
@@ -110,6 +114,14 @@ module Writ
       # Get the default scope for a model
       # @param model_name [String] The model name
       # @return [Proc, nil] The default scope callable or nil if not found
+      def get_default_scope_validator(model_name:)
+        @default_scope_definitions.dig(model_name.to_s, :validate)
+      end
+
+      def get_scope_validator(model_name:, scope_name:)
+        @scope_definitions.dig(model_name.to_s, scope_name.to_s, :validate)
+      end
+
       def get_default_scope(model_name:)
         @default_scope_definitions.dig(model_name.to_s, :callable)
       end
@@ -580,7 +592,7 @@ module Writ
         end
 
         # A model scope without a default boundary can expose records before permission scopes narrow the relation.
-        missing_default_scope_mode = Writ::Configuration.on_missing_default_scope
+        missing_default_scope_mode = Writ::Configuration.multi_tenant? ? Writ::Configuration.on_missing_default_scope : :skip
         @scope_definitions.each_key do |model_name|
           next if @default_scope_definitions.key?(model_name)
           next if @missing_default_scope_exemptions.include?(model_name)
@@ -689,7 +701,8 @@ module Writ
       def register_validator(store, model_name, block, label)
         resolved = block
         validate_callable!(resolved, label)
-        validate_hook_signature!(resolved, %i[context record], label)
+        keywords = resolved.parameters.filter_map { |kind, name| name if %i[key keyreq].include?(kind) }
+        validate_hook_signature!(resolved, keywords.include?(:errors) ? %i[context record errors] : %i[context record], label)
         key = model_name&.to_s
         store[key] << resolved
         resolved

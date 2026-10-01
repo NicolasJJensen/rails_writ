@@ -48,6 +48,14 @@ module Writ
         permitted?(:delete)
       end
 
+      def permitted_attributes_for_create
+        input_attributes(:create)
+      end
+
+      def permitted_attributes_for_update
+        input_attributes(:update)
+      end
+
       class Scope
         attr_reader :scope, :context
 
@@ -62,6 +70,12 @@ module Writ
       end
 
       private
+
+      def input_attributes(action)
+        fields = Writ::Access.input_fields(context: context, record: record, action: action)
+        model = record.is_a?(Class) ? record : record.class
+        (fields == :all ? model.attribute_names : fields).map(&:to_sym)
+      end
 
       def permitted?(action)
         # Proposed-state validation stays explicit so a Pundit check does not also validate pending changes.

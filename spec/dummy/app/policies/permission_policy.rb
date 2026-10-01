@@ -8,7 +8,9 @@ class PermissionPolicy < ApplicationPolicy
   # ============================================
 
   default_scope do
-    Permission.joins(:role).where(roles: { organisation: Current.organisation })
+    query do
+      Permission.joins(:role).where(roles: { organisation: Current.organisation })
+    end
   end
 
   # ============================================

@@ -5,59 +5,79 @@ module Writ
     module ProposedCheck
       private
 
-      def proposed_grant_matches?(context, record, permission, model, authorization_model, normalized_arguments: nil)
+      def proposed_grant_errors(context, record, permission, model, authorization_model, normalized_arguments: nil)
         registry = Configuration.registry
-        default_matcher = registry.get_default_scope_matcher(model_name: authorization_model.name)
+        errors = ActiveModel::Errors.new(record)
         if registry.default_scope_registered?(model_name: authorization_model.name) || model.default_scopes.any?
-          return false unless proposed_matcher_matches?(context, record, default_matcher, 'default_scope', model)
+          evaluate_proposed_scope(context, record, errors,
+                                  registry.get_default_scope_matcher(model_name: authorization_model.name),
+                                  registry.get_default_scope_validator(model_name: authorization_model.name),
+                                  'default_scope', model)
         end
 
-        permission.permission_scopes.all? do |attachment|
+        permission.permission_scopes.each do |attachment|
           name = attachment.scope.name
-          matcher = registry.get_scope_matcher(model_name: authorization_model.name, scope_name: name)
           args = ScopeEvaluator.resolve_arguments(registry, authorization_model.name, name, attachment,
                                                   normalized_arguments: normalized_arguments)
-          proposed_matcher_matches?(context, record, matcher, name, model, args)
+          evaluate_proposed_scope(context, record, errors,
+                                  registry.get_scope_matcher(model_name: authorization_model.name, scope_name: name),
+                                  registry.get_scope_validator(model_name: authorization_model.name, scope_name: name),
+                                  name, model, args)
         end
+        errors
       end
 
       def preflight_proposed_matchers!(permissions, model, authorization_model)
         registry = Configuration.registry
         default_required = registry.default_scope_registered?(model_name: authorization_model.name) || model.default_scopes.any?
-        if default_required && !registry.get_default_scope_matcher(model_name: authorization_model.name)
+        if default_required && !registry.get_default_scope_matcher(model_name: authorization_model.name) &&
+           !registry.get_default_scope_validator(model_name: authorization_model.name)
           missing_matcher!(model, 'default_scope')
         end
         permissions.each do |permission|
           permission.permission_scopes.each do |attachment|
             name = attachment.scope.name
-            next if registry.get_scope_matcher(model_name: authorization_model.name, scope_name: name)
+            next if registry.get_scope_matcher(model_name: authorization_model.name, scope_name: name) ||
+                    registry.get_scope_validator(model_name: authorization_model.name, scope_name: name)
 
             missing_matcher!(model, name)
           end
         end
       end
 
-      def proposed_matcher_matches?(context, record, matcher, name, model, args = nil)
-        unless matcher
-          return true unless Configuration.on_missing_matcher == :raise
-
+      def evaluate_proposed_scope(context, record, errors, matcher, validator, name, model, args = nil)
+        scope_errors = ActiveModel::Errors.new(record)
+        if validator
+          DSL::ScopeDSL.invoke(validator, record, scope_errors, context: context, arguments: args&.deep_dup)
+        end
+        if matcher
+          matched = args.nil? ? matcher.call(context, record) : matcher.call(context, record, args.deep_dup)
+          scope_errors.add(:base, :not_permitted, message: 'is not permitted') unless matched
+        elsif !validator && Configuration.on_missing_matcher == :raise
           missing_matcher!(model, name)
         end
-
-        args.nil? ? !!matcher.call(context, record) : !!matcher.call(context, record, args.deep_dup)
+        scope_errors.each { |error| errors.import(error) }
       end
 
       def run_action_validators(context, record, action, model)
         registry = Configuration.registry
         method = action.to_s == 'create' ? :creation_validators_for : :update_validators_for
-        validators = registry.public_send(method, model_name: model.name)
-        result = true
-        validators.each { |validator| result = !!validator.call(context: context, record: record) && result }
-        result
+        errors = ActiveModel::Errors.new(record)
+        registry.public_send(method, model_name: model.name).each do |validator|
+          accepts_errors = validator.parameters.any? { |kind, name| %i[key keyreq].include?(kind) && name == :errors }
+          if accepts_errors
+            validator_errors = ActiveModel::Errors.new(record)
+            DSL::ScopeDSL.invoke(validator, context: context, record: record, errors: validator_errors)
+            validator_errors.each { |error| errors.import(error) }
+          elsif !validator.call(context: context, record: record)
+            errors.add(:base, :not_permitted, message: 'is not permitted')
+          end
+        end
+        errors
       end
 
       def missing_matcher!(model, name)
-        message = "Define a matches: matcher for #{model.name}/#{name} before checking proposed access"
+        message = "Define a validate block or matches: matcher for #{model.name}/#{name} before checking proposed access"
         case Configuration.on_missing_matcher
         when :raise
           raise ConfigurationError, message
@@ -65,7 +85,6 @@ module Writ
           Configuration.logger.warn("[Writ] #{message}")
         end
       end
-
     end
   end
 end

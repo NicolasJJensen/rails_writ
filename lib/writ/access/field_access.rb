@@ -11,6 +11,30 @@ module Writ
         fields_for(context: context, action: action, record: record)
       end
 
+      def input_fields(context:, record:, action:)
+        validate_action!(action)
+        model = record.is_a?(Class) ? record : record.class
+        validate_model!(model)
+        return fields_for(context: context, action: action, record: record) if record.is_a?(ActiveRecord::Base) && record.persisted?
+
+        unless record.is_a?(Class) || (record.is_a?(ActiveRecord::Base) && record.new_record? && action.to_s == 'create')
+          raise ArgumentError, 'Input fields require a model class, persisted record, or new record with action create'
+        end
+
+        authorization_model = Configuration.authorization_model_for(model)
+        prepared = prepare_permissions(context, action, authorization_model, includes: [:role])
+        # Candidate fields must be available before the attributes needed by proposed validators are assigned.
+        resolve_fields(context, action, record, authorization_model, prepared.valid.map(&:role).uniq)
+      end
+
+      def normalize_field_names(record:, fields:)
+        model = record.is_a?(Class) ? record : record.class
+        Array(fields).map do |field|
+          name = field.to_s.sub(/\(\d+[if]\)\z/, '')
+          model.attribute_aliases.fetch(name, name)
+        end.uniq
+      end
+
       def fields_for(context:, action:, record:)
         validate_action!(action)
         model = record.is_a?(Class) ? record : record.class
@@ -30,11 +54,11 @@ module Writ
           preflight_proposed_matchers!(permissions, model, authorization_model)
         end
         matching = permissions.select do |permission|
-          action.to_s == 'create' && proposed_grant_matches?(context, record, permission, model, authorization_model,
-                                                            normalized_arguments: prepared.normalized_arguments)
+          action.to_s == 'create' && proposed_grant_errors(context, record, permission, model, authorization_model,
+                                                          normalized_arguments: prepared.normalized_arguments).empty?
         end
         if record.is_a?(ActiveRecord::Base) && record.new_record? && action.to_s == 'create' && matching.any?
-          matching = [] unless run_action_validators(context, record, :create, authorization_model)
+          matching = [] unless run_action_validators(context, record, :create, authorization_model).empty?
         end
         resolve_fields(context, action, record, authorization_model, matching.map(&:role).uniq)
       end

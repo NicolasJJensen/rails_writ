@@ -20,7 +20,7 @@ as_roleable(scoping_model: true, auto_generate: false)
 
 Then call generation explicitly from that service after constructing the tenant. Do not declare conflicting roleable options twice. Identical declarations are a no-op, including inherited declarations.
 
-Users receive roles only when the application assigns them. Default-role metadata is not automatic user membership.
+Users receive roles only when the application assigns them. The configured default role is stored as `organisation.default_user_role`; the enrollment flow can use it when assigning membership.
 
 ## Add a new model/action
 

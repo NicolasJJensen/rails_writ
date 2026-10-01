@@ -27,14 +27,13 @@ module Writ
         # Define a default scope for this policy's model
         # Default scopes are always applied before permission scopes
         # Only one default scope per model
-        # @param block [Proc] Scope implementation; can accept 0 or 1 parameters
-        # @example Zero parameters (uses Current context directly)
+        # @param block [Proc] Declaration containing query and optional validate blocks
+        # @example Current context with proposed validation
         #   default_scope do
-        #     Asset.where(organisation: Current.organisation)
-        #   end
-        # @example One parameter (receives the context object)
-        #   default_scope do |context|
-        #     Asset.where(organisation: context.organisation)
+        #     query { Asset.where(organisation: Current.organisation) }
+        #     validate do |record, errors|
+        #       errors.add(:organisation, :invalid) unless record.organisation_id == Current.organisation.id
+        #     end
         #   end
         def default_scope(matches: nil, replace: false, &block)
           configuration_dsl.default_scope(model: policy_model, matches: matches, replace: replace,
@@ -43,16 +42,20 @@ module Writ
 
         # Define a scope for this policy's model
         # @param name [Symbol] Scope name
-        # @param block [Proc] Scope implementation; can accept 0 or 1 parameters
-        # @example Zero parameters (uses Current context directly)
+        # @param block [Proc] Declaration containing query and optional validate blocks
+        # @example Current context in a query block
         #   scope :service_industry do
-        #     Asset.joins(:service_industries)
-        #          .where(service_industries: { id: Current.user.service_industries })
+        #     query do
+        #       Asset.joins(:service_industries)
+        #            .where(service_industries: { id: Current.user.service_industries })
+        #     end
         #   end
-        # @example One parameter (receives the context object)
-        #   scope :service_industry do |context|
-        #     Asset.joins(:service_industries)
-        #          .where(service_industries: { id: context.service_industries })
+        # @example Explicit context in a query block
+        #   scope :service_industry do
+        #     query do |context:|
+        #       Asset.joins(:service_industries)
+        #            .where(service_industries: { id: context.service_industries })
+        #     end
         #   end
         def scope(name, arguments: {}, matches: nil, replace: false, &block)
           configuration_dsl.scope(name, model: policy_model, arguments: arguments, matches: matches, replace: replace,

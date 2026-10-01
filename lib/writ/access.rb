@@ -54,14 +54,14 @@ module Writ
         end
       end
 
-      def validation(subject:, action:, context:)
+      def validation(subject:, action:, context:, submitted_fields: nil)
         validate_action!(action)
         records = validation_records!(subject)
         return CheckResult.new(allowed: true, reason: :granted) if records.empty?
         records.each { |record| validate_local_lifecycle!(record, action) }
 
         records.each do |record|
-          result = local_validation_result(context, action, record)
+          result = local_validation_result(context, action, record, submitted_fields: submitted_fields)
           return result unless result.allowed?
         end
         CheckResult.new(allowed: true, reason: :granted)
@@ -238,7 +238,7 @@ module Writ
         end
       end
 
-      def local_validation_result(context, action, record)
+      def local_validation_result(context, action, record, submitted_fields: nil)
         model = record.class
         authorization_model = Configuration.authorization_model_for(model)
         prepared = prepare_permissions(context, action, authorization_model, collect_denials: true)
@@ -250,14 +250,39 @@ module Writ
         # Saved and proposed states can be permitted by different grants.
         # Restrictions on transitions between those states belong in host validators.
         preflight_proposed_matchers!(permissions, model, authorization_model)
-        return matcher_denial(prepared, permissions) unless permissions.any? { |permission|
-          proposed_grant_matches?(context, record, permission, model, authorization_model,
-                                  normalized_arguments: prepared.normalized_arguments)
-        }
+        failures = []
+        matched = permissions.any? do |permission|
+          errors = proposed_grant_errors(context, record, permission, model, authorization_model,
+                                         normalized_arguments: prepared.normalized_arguments)
+          failures << GrantDenial.new(permission_id: permission.id, reason: :proposed_scope_mismatch, errors: errors) unless errors.empty?
+          errors.empty?
+        end
+        unless matched
+          denials = prepared.denied + failures
+          shared = denials.map(&:errors).reduce { |left, right| left & right }
+          return CheckResult.new(allowed: false, reason: :proposed_scope_mismatch, denied_grants: denials,
+                                 errors: shared&.any? ? shared : Access.generic_errors)
+        end
+
+        if submitted_fields
+          permitted = input_fields(context: context, record: record, action: action)
+          forbidden = if permitted == :all
+            []
+          else
+            normalize_field_names(record: record, fields: submitted_fields) - normalize_field_names(record: record, fields: permitted)
+          end
+          if forbidden.any?
+            errors = forbidden.map do |field|
+              ErrorSnapshot.new(attribute: field, type: :not_permitted, options: { message: 'is not permitted' })
+            end
+            return CheckResult.new(allowed: false, reason: :forbidden_fields, errors: errors)
+          end
+        end
 
         validator_action = record.new_record? ? :create : (action.to_s == 'update' ? :update : nil)
-        if validator_action && !run_action_validators(context, record, validator_action, authorization_model)
-          return CheckResult.new(allowed: false, reason: :validator_rejected)
+        if validator_action
+          errors = run_action_validators(context, record, validator_action, authorization_model)
+          return CheckResult.new(allowed: false, reason: :validator_rejected, errors: errors) unless errors.empty?
         end
         CheckResult.new(allowed: true, reason: :granted)
       end
@@ -270,13 +295,6 @@ module Writ
         elsif action.to_s == 'update'
           validate_update_record!(record)
         end
-      end
-
-      def matcher_denial(prepared, permissions)
-        denials = prepared.denied + permissions.map do |permission|
-          GrantDenial.new(permission_id: permission.id, reason: :proposed_scope_mismatch)
-        end
-        CheckResult.new(allowed: false, reason: :proposed_scope_mismatch, denied_grants: denials)
       end
 
       def validate_update_record!(record)

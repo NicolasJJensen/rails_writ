@@ -1,50 +1,80 @@
 # Advanced write flows
 
-[README](../README.md#creating-and-updating-records) contains the ordinary create/update examples for both tenancy modes. These additional contracts apply with either the core API or Pundit adapter.
+The [README](../README.md#creating-and-updating-records) covers ordinary create/update actions, field filtering, and Rails error responses. These additional contracts apply in both tenancy modes.
 
-## Saved state versus proposed state
+## Saved state and proposed state
 
-`authorization` checks saved membership. `validation` evaluates the record's current in-memory attributes against matchers and applicable lifecycle validators. Neither saves, reloads, or clears changes.
+`authorization` checks saved SQL membership. `validation` checks the current in-memory attributes using scope validators and applicable lifecycle validators. Neither saves or reloads the record.
 
-Different grants may allow the saved and proposed states. That does not authorize every transition between them. Give operations such as approval a distinct action and explicit business rules.
+Different grants may allow the saved and proposed states. That alone does not authorize every transition between them. Give operations such as approval a distinct action and explicit business rules.
 
-## Lock before assignment
+`authorize_proposed!` infers create/update and checks Rails dirty fields when `attributes:` is omitted. Dirty tracking includes application-assigned changes and excludes unchanged submitted values. Supply `attributes:` when every submitted key must be checked. The helper does not replace the initial Pundit `authorize` call or satisfy `verify_authorized` on its own.
 
-When concurrent edits could invalidate authorization, acquire the lock before reading fields or assigning changes:
+## Concurrent edits
+
+When concurrent edits could invalidate authorization, lock before assignment. For a Pundit controller:
 
 ```ruby
-asset.with_lock do
-  saved = Writ::Access.authorization(subject: asset, action: :update, context: context)
-  raise AccessDenied unless saved.allowed?
-
-  fields = Writ::Access.writable_fields(context: context, record: asset, action: :update)
-  input = attributes.stringify_keys
-  raise AccessDenied unless fields == :all || (input.keys - fields).empty?
-
-  asset.assign_attributes(input)
-  proposed = Writ::Access.validation(subject: asset, action: :update, context: context)
-  raise AccessDenied unless proposed.allowed?
-  asset.save!
+@asset.with_lock do
+  authorize @asset, :update?
+  authorize_proposed!(@asset, attributes: permitted_attributes(@asset))
+  @asset.save!
 end
 ```
 
-`AccessDenied` is the application exception defined in the README's core example. Adapter applications can use `Pundit::NotAuthorizedError`. Neither gem chooses HTTP responses for your application.
+`with_lock` reloads the saved record before entering the block. Lock related records too when their changes could invalidate the decision. Keep the user and selected tenant stable for the entire operation.
 
-`with_lock` reloads the saved record before entering the block. Lock relevant related records too if their changes could invalidate the decision. Keep the context stable for the operation; multi-tenant applications must keep the selected tenant stable as well.
+For the core API, use `authorization`, then assign attributes and call `validation` with `submitted_fields:` inside the same lock. See the [core example](../README.md#using-the-core-api).
 
 ## Associations and callbacks
 
-- Proposed validation supports direct attributes, including foreign keys. It requires an unchanged primary key for persisted records.
-- Pending changes to loaded associated records are rejected. Authorize nested records separately.
+- Proposed validation supports direct attributes, including foreign keys. For `:update`, persisted primary keys must remain unchanged.
+- For `:update`, pending changes to loaded associated records are rejected. Authorize and validate nested records separately.
 - Some association setters write immediately. Do not use them to build an unsaved proposal.
-- Callbacks that change authorization-sensitive attributes must execute before validation or enforce equivalent rules themselves.
+- Callbacks that change authorization-sensitive attributes must execute before the proposed check or enforce equivalent rules themselves.
 
-For tenant transfers, changing `organisation_id` is not an ordinary permitted edit: the current tenant matcher normally denies it. An application-specific transfer operation must authorize both sides and preserve its own invariants.
+A tenant transfer is a separate operation: the ordinary tenant default scope denies a change to another organisation. The application must explicitly authorize both sides of a transfer.
 
-## Matcher and validator behavior
+## Scope validation and errors
 
-Keep default and per-grant matchers equivalent to SQL scopes. ActiveRecord default scopes also need an equivalent default matcher when validating proposed state.
+Each scope has a SQL `query` and, when proposed writes need checking, a `validate` callback. Keep them equivalent. ActiveRecord model-level default scopes also need an equivalent Writ default validator when their restrictions must constrain proposals.
 
-Missing matchers raise by default. `:warning` and `:skip` omit the missing constraint; they do not create an equivalent validation rule. Existing false matchers still deny, and matcher exceptions propagate.
+The validator receives the actual record and an isolated `ActiveModel::Errors` collection:
 
-Create/update validators run after applicable matchers, global before model-specific. Every validator must pass. They apply only to `validation` for the matching action, not to saved checks or adapter predicates. Matchers and validators must treat the record and context as read-only.
+```ruby
+# Inside Writ.configure
+scope :draft, model: Asset do
+  query { Asset.where(status: "draft") }
+  validate do |asset, errors|
+    errors.add(:status, :not_permitted, message: "must remain a draft") unless asset.status == "draft"
+  end
+end
+```
+
+Treat the record, context, and arguments as read-only. Add errors to the supplied collector, not `asset.errors`. This prevents a rejected alternative grant from contaminating a successful decision.
+
+Within a grant, every scope must pass. Any successful grant permits the proposal, subject to the default boundary and lifecycle validators. On total failure, a sole grant's errors or identical errors shared by all failed grants become the public result; otherwise Writ returns a generic base error. Individual failures remain available in `result.denied_grants` for diagnostics.
+
+Core `validation` leaves the live record's errors untouched. `result.apply_errors_to(record)` imports the final errors and replaces only earlier Writ-owned error objects. Applying a later successful result removes those previous Writ errors while preserving unrelated errors. The adapter helper performs this step automatically.
+
+`result.errors` and each denied grant's `errors` contain immutable snapshots with `attribute`, `type`, and `options`. Use normal `record.errors.full_messages`, `to_hash`, or `details` after applying them. Avoid returning internal grant diagnostics to clients.
+
+## Lifecycle validators
+
+Authorization-specific rules applying after scope validation can use lifecycle hooks:
+
+```ruby
+Writ.configure do
+  update_validator model: Asset do |context:, record:, errors:|
+    unless context.may_approve? || !record.will_save_change_to_approved_at?
+      errors.add(:approved_at, :not_permitted, message: "cannot be changed")
+    end
+  end
+end
+```
+
+`creation_validator` works the same way for creates. Global validators run before model-specific validators, after a matching grant is found. Explicit `errors:` selects error-collection behavior; the return value is ignored. Existing callbacks accepting only `context:` and `record:` use their boolean return value.
+
+Ordinary model invariants belong in ActiveRecord validations and run at `save!`. Scope and lifecycle callback exceptions propagate; they are not converted into user validation errors.
+
+Missing proposed validators/matchers raise by default. The advanced `:warning` and `:skip` modes omit the missing check; they do not implement an equivalent restriction. See [failure modes](reference.md#failure-modes).

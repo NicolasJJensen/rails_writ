@@ -239,14 +239,14 @@ RSpec.describe Writ::Configuration do
       Writ::Configuration.instance_variable_set(:@configure_blocks, [])
 
       Writ::Configuration.configure do |config|
-        config.scope(:existing, model: Asset) { Asset.all }
+        config.scope(:existing, model: Asset) { query { Asset.all } }
       end
       published = Writ::Configuration.registry
       blocks = Writ::Configuration.instance_variable_get(:@configure_blocks).dup
 
       expect {
         Writ::Configuration.configure do |config|
-          config.scope(:partial, model: Asset) { Asset.all }
+          config.scope(:partial, model: Asset) { query { Asset.all } }
           config.field_resolver(model: Asset, include_global: 'invalid') { |**| [] }
         end
       }.to raise_error(ArgumentError, /include_global.*boolean/)
@@ -313,16 +313,18 @@ RSpec.describe Writ::Configuration do
 
   describe ".configure" do
     it "yields a ConfigurationDSL instance" do
+      original_registry = Writ::Configuration.registry
       test_registry = Writ::Logic::Registry.new
       original_blocks = Writ::Configuration.instance_variable_get(:@configure_blocks)&.dup
       allow(Writ::Configuration).to receive(:registry).and_return(test_registry)
 
       Writ::Configuration.configure do |config|
-        config.scope(:configure_test, model: Asset) { Asset.all }
+        config.scope(:configure_test, model: Asset) { query { Asset.all } }
       end
 
       expect(test_registry.scope_callable_registered?(model_name: 'Asset', scope_name: 'configure_test')).to be true
     ensure
+      Writ::Configuration.instance_variable_set(:@registry, original_registry)
       Writ::Configuration.instance_variable_set(:@configure_blocks, original_blocks)
     end
   end

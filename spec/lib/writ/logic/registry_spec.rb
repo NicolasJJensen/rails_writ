@@ -1293,6 +1293,7 @@ RSpec.describe Writ::Logic::Registry do
   end
 
   describe "validate_references! warns about models with scopes but no default_scope (TEST-6)" do
+    before { allow(Writ::Configuration).to receive(:multi_tenant?).and_return(true) }
     it "logs a warning for models that have scopes but no default_scope" do
       original_mode = Writ::Configuration.on_missing_default_scope
       Writ::Configuration.on_missing_default_scope = :warning

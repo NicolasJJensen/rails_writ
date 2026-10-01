@@ -63,18 +63,18 @@ RSpec.describe 'Rake generation with custom host keys' do
     original&.each { |key, value| ENV[key] = value }
   end
 
-  it 'still generates for the configured tenant model in multi-tenant mode' do
+  it 'infers tenant mode and the lookup model from a configured model class' do
     organisation = create(:organisation)
     original_multi_tenant = Writ::Configuration.multi_tenant
     original_scoping_model = Writ::Configuration.default_scoping_model
-    Writ::Configuration.multi_tenant = true
-    Writ::Configuration.default_scoping_model = 'Organisation'
+    Writ::Configuration.multi_tenant = nil
+    Writ::Configuration.scoping_model = Organisation
 
     expect(Writ::Generator).to receive(:generate_default_permissions).with(organisation, models: nil)
 
     original = ENV.to_h.slice('ID', 'ORG', 'MODEL', 'MODELS')
     ENV['ID'] = organisation.id.to_s
-    ENV['MODEL'] = 'Organisation'
+    ENV.delete('MODEL')
     ENV.delete('ORG')
     ENV.delete('MODELS')
 

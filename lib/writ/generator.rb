@@ -12,9 +12,10 @@ module Writ
     class << self
 
       def generate_default_permissions(scoped_by_record=nil, models: nil, condition_arguments: {})
+        validate_tenant_for_generation!(scoped_by_record)
         owner_roles = scoped_by_record ? scoped_by_record.roles : Writ::Configuration.role_class.all
         if owner_roles.exists?
-          raise ConfigurationError, 'Defaults are for new organisations. Use add_permissions for explicit data migrations'
+          raise ConfigurationError, 'Default generation requires no existing roles for this owner. Use add_permissions to update existing roles'
         end
         registry = Writ::Configuration.registry
         model_filter = normalize_model_filter(models)
@@ -44,10 +45,7 @@ module Writ
 
       # Low-level migration input is explicit. Existing actions and fields remain host-owned.
       def generate_permissions(scoped_by_record: nil, roles:, permissions_by_role:, models: nil)
-        if scoped_by_record.nil? && Writ::Configuration.multi_tenant != false
-          raise Writ::ConfigurationError,
-                'Pass a tenant record when generating permissions, or explicitly configure multi_tenant = false for global roles'
-        end
+        validate_tenant_for_generation!(scoped_by_record)
         model_filter = normalize_model_filter(models)
         permissions_by_role = filter_permissions_by_role(permissions_by_role, model_filter) if model_filter
 
@@ -72,6 +70,12 @@ module Writ
 
           set_default_role(scoped_by_record, default_role) unless had_roles
         end
+      end
+
+      def validate_tenant_for_generation!(tenant)
+        return unless Configuration.multi_tenant?
+        raise ConfigurationError, 'Pass a tenant record when generating permissions in tenant mode' unless tenant
+        Configuration.validate_tenant!(tenant) if Configuration.scoping_model
       end
 
       # Detect stale permissions and accessible fields that exist in the database

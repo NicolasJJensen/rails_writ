@@ -59,6 +59,10 @@ RSpec.describe 'Installer orchestration' do
       expect(File).not_to exist(File.join(directory, 'app/policies'))
       expect(File).to exist(File.join(directory, 'config/writ/permissions.rb'))
       expect(File).to exist(File.join(directory, 'config/initializers/writ.rb'))
+      initializer = File.read(File.join(directory, 'config/initializers/writ.rb'))
+      expect(initializer).to include('config.scoping_model = "Host::Organisation"')
+      expect(initializer).to include('config.tenant_source = ->(context) { Current.organisation }')
+      expect(initializer).not_to include('config.multi_tenant', 'config.role_source', 'config.permission_source')
       expect(Dir[File.join(directory, 'db/migrate/*.rb')].length).to eq(8)
     end
   end

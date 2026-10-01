@@ -2,13 +2,13 @@
 
 [Back to README](../README.md)
 
-Use batching when rendering collections, and measure query construction separately from SQL execution. Examples use `Access = Writ::Access`.
+Use batching when rendering collections, and measure query construction separately from SQL execution. Use `Writ::Access` for the core API; the adapter uses the same query implementation.
 
 ## Batch field access
 
 ```ruby
-records = Access.filter(context: actor, action: :read, records: Asset).limit(50).to_a
-fields_by_record = Access.fields_for_many(context: actor, action: :read, records: records)
+records = Writ::Access.filter(context: actor, action: :read, records: Asset).limit(50).to_a
+fields_by_record = Writ::Access.fields_for_many(context: actor, action: :read, records: records)
 # { asset => ["name", ...] }; each value can also be :all or [].
 ```
 
@@ -46,7 +46,7 @@ ActiveSupport::Notifications.subscribe("permission.filter.writ") do |event|
 end
 ```
 
-Subscribe to `permission.check.writ` and `permission.filter.writ` using ActiveSupport::Notifications. Filter events include grant counts and a reason (`no_permission_source`, `no_grants`, `no_valid_grants`, `filtered`, or `error`). Error events contain the exception class, not its potentially sensitive message.
+Subscribe to `permission.filter.writ` using ActiveSupport::Notifications. Filter events include grant counts and a reason (`no_permission_source`, `no_grants`, `no_valid_grants`, `filtered`, or `error`). Error events contain the exception class, not its potentially sensitive message.
 
 Filter `duration_ms` uses a monotonic clock and measures **query construction**, including loading grant metadata and executing Ruby conditions, not eventual record-query execution. `timing: 'query_construction'` makes that distinction explicit. Use ActiveRecord SQL notifications for database execution timing. Event delivery does not load the returned relation or count matching records. Scope/condition argument metadata is assembled only with a subscriber and contains stored arguments; treat it as potentially sensitive in your logger.
 

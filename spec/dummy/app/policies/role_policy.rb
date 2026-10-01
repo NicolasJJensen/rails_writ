@@ -8,7 +8,9 @@ class RolePolicy < ApplicationPolicy
   # ============================================
 
   default_scope do
-    Role.where(organisation: Current.organisation)
+    query do
+      Role.where(organisation: Current.organisation)
+    end
   end
 
   # ============================================

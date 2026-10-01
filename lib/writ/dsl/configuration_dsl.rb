@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative 'scope_dsl'
+
 module Writ
   module DSL
     class ConfigurationDSL
@@ -10,7 +12,7 @@ module Writ
         @condition_stack = []
       end
 
-      SETTINGS = %i[default_role_name default_scoping_model multi_tenant logger
+      SETTINGS = %i[default_role_name default_scoping_model multi_tenant scoping_model tenant_source logger
                     on_missing_condition on_missing_default_scope on_missing_matcher on_condition_error on_invalid_scope_arguments
                     on_invalid_condition_arguments permission_class role_class scope_class
                     permission_scope_class condition_class permission_condition_class
@@ -77,8 +79,11 @@ module Writ
       # @param model [Class] Model class (optional if in with_options block)
       # @param block [Proc] Scope implementation
       # @example
-      #   config.default_scope model: Asset do |context|
-      #     Asset.where(organisation: context.organisation)
+      #   config.default_scope model: Asset do
+      #     query { |context:| Asset.where(organisation: context.organisation) }
+      #     validate do |asset, errors, context:|
+      #       errors.add(:organisation, :not_permitted) unless asset.organisation == context.organisation
+      #     end
       #   end
       def default_scope(model: nil, matches: nil, replace: false, declaration_location: nil, &block)
         options = current_options.merge(compact_hash(model: model))
@@ -87,8 +92,9 @@ module Writ
         raise ArgumentError, "model: required for default_scope" unless model_class
         raise ArgumentError, "Block required for default_scope" unless block_given?
 
-        @configuration.register_default_scope(model_name: model_class.name, matches: matches, replace: replace,
-                                              declaration_location: declaration_location || caller_location, &block)
+        query, validator = scope_callbacks(block, matches)
+        @configuration.register_default_scope(model_name: model_class.name, matches: matches, validate: validator, replace: replace,
+                                              declaration_location: declaration_location || caller_location, &query)
       end
 
       # Register scope with metadata and filter implementation
@@ -96,8 +102,11 @@ module Writ
       # @param model [Class] Model class (optional if in with_options block)
       # @param block [Proc] Filter implementation
       # @example
-      #   config.scope :service_industry, model: Asset do |context|
-      #     Asset.joins(:service_industries).where(service_industries: { id: context.service_industries })
+      #   config.scope :drafts, model: Asset do
+      #     query { Asset.where(status: 'draft') }
+      #     validate do |asset, errors|
+      #       errors.add(:status, :not_permitted, message: 'must remain a draft') unless asset.status == 'draft'
+      #     end
       #   end
       # Description is read from I18n.t("writ.scopes.#{name}")
       def scope(name, model: nil, arguments: {}, matches: nil, replace: false, declaration_location: nil, &block)
@@ -110,8 +119,9 @@ module Writ
 
         model_name = model_class.name
 
-        @configuration.register_scope(model_name: model_name, scope_name: name, arguments: arguments, matches: matches,
-                                      replace: replace, declaration_location: declaration_location || caller_location, &block)
+        query, validator = scope_callbacks(block, matches)
+        @configuration.register_scope(model_name: model_name, scope_name: name, arguments: arguments, matches: matches, validate: validator,
+                                      replace: replace, declaration_location: declaration_location || caller_location, &query)
       end
 
       def field_resolver(model: nil, include_global: false, append: false, replace: false, &block)
@@ -224,6 +234,13 @@ module Writ
       end
 
       private
+
+      def scope_callbacks(block, matches)
+        return [block, nil] if matches || block.parameters.any? { |kind, _| %i[req opt rest].include?(kind) }
+
+        declaration = ScopeDSL.new(&block)
+        [declaration.query_callable, declaration.validator]
+      end
 
       def caller_location
         location = caller_locations(2, 1).first

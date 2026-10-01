@@ -30,7 +30,7 @@ RSpec.describe 'Core without the Pundit adapter' do
             Writ.configure do |config|
               config.multi_tenant = false
               allow_missing_default_scope model: Widget
-              scope(:visible, model: Widget) { Widget.all }
+              scope(:visible, model: Widget) { query { Widget.all } }
               permission :read, model: Widget, role: :Reader, scopes: [:visible]
             end
           DEFINITIONS

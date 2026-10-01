@@ -101,13 +101,13 @@ namespace :writ do
     end
 
     model_class = begin
-      model_name = ENV['MODEL'] || Writ::Configuration.default_scoping_model
+      model_name = ENV['MODEL'] || Writ::Configuration.scoping_model
       unless model_name
-        abort("\nMODEL is required when using ID=. Set MODEL=ClassName or configure default_scoping_model.\n")
+        abort("\nMODEL is required when using ID=. Set MODEL=ClassName or configure scoping_model.\n")
       end
       model_name.constantize.tap do |candidate|
-        if Writ::Configuration.multi_tenant == true
-          configured_name = Writ::Configuration.default_scoping_model
+        if Writ::Configuration.multi_tenant?
+          configured_name = Writ::Configuration.scoping_model
           if configured_name.present?
             configured_model = configured_name.to_s.constantize
             unless candidate == configured_model
@@ -119,7 +119,7 @@ namespace :writ do
                                      candidate.writ_roleable_configuration
             unless roleable_configuration && roleable_configuration[:scoping_model]
               abort("\n#{candidate.name} is not a supported tenant/scoping model. " \
-                    "Configure default_scoping_model or mark the model with as_roleable(scoping_model: true).\n")
+                    "Configure scoping_model or mark the model with as_roleable(scoping_model: true).\n")
             end
           end
         end

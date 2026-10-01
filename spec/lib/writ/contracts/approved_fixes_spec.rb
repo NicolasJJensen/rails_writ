@@ -9,7 +9,7 @@ RSpec.describe 'Approved authorization regressions' do
 
   around do |example|
     original_registry = config.registry
-    settings = %i[multi_tenant on_invalid_scope_arguments on_invalid_condition_arguments]
+    settings = %i[multi_tenant scoping_model on_invalid_scope_arguments on_invalid_condition_arguments]
     originals = settings.to_h { |key| [key, config.public_send(key)] }
     example.run
   ensure
@@ -35,8 +35,9 @@ RSpec.describe 'Approved authorization regressions' do
     expect(role.permissions.where(action: 'approve')).not_to exist
   end
 
-  it 'does not resolve a tenant-owned role as global when the tenancy flag is unset' do
+  it 'does not resolve a tenant-owned role as global when only its model is configured' do
     config.multi_tenant = nil
+    config.scoping_model = 'Organisation'
     role_name = role.name
     expect do
       Writ::Generator.generate_permissions(

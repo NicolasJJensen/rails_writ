@@ -38,8 +38,8 @@ module Writ
                     "Scope '#{scope_name}' not registered for model '#{model_name}'. " \
                     "Register it using:\n" \
                     "  Writ.configure do\n" \
-                    "    scope :#{scope_name}, model: #{model_name} do |context|\n" \
-                    "      #{model_name}.where(...)\n" \
+                    "    scope :#{scope_name}, model: #{model_name} do\n" \
+                    "      query { |context:| #{model_name}.where(...) }\n" \
                     "    end\n" \
                     "  end"
             end

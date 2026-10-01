@@ -8,16 +8,22 @@ class CheckInPolicy < ApplicationPolicy
   # ============================================
 
   default_scope do
-    CheckIn.joins(:user).where(users: { organisation: Current.organisation })
+    query do
+      CheckIn.joins(:user).where(users: { organisation: Current.organisation })
+    end
   end
 
   scope :current_location do
-    current_location_id = Current.user.check_ins.where(finish: nil).order(start: :desc).limit(1).select(:location_id)
-    CheckIn.where(location_id: current_location_id)
+    query do
+      current_location_id = Current.user.check_ins.where(finish: nil).order(start: :desc).limit(1).select(:location_id)
+      CheckIn.where(location_id: current_location_id)
+    end
   end
 
   scope :own do
-    CheckIn.where(user: Current.user)
+    query do
+      CheckIn.where(user: Current.user)
+    end
   end
 
   # ============================================
