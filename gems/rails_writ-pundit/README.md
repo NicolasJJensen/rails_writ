@@ -8,7 +8,9 @@ The [main README](https://github.com/NicolasJJensen/rails_writ#readme) covers ba
 
 - [Installation](#installation)
 - [Policies](#policies)
+- [Policy inheritance](#policy-inheritance)
 - [Controller helpers](#controller-helpers)
+- [Permitted attributes](#permitted-attributes)
 - [Nested parameters](#nested-parameters)
 - [Custom actions](#custom-actions)
 - [Shared conditions](#shared-conditions)
@@ -84,6 +86,42 @@ end
 
 For tenant-owned records, also define the [default tenant scope](https://github.com/NicolasJJensen/rails_writ#default-scopes-and-tenants), omitting `model:` inside the policy. Put each declaration in one place.
 
+## Policy inheritance
+
+For models sharing a Rails STI hierarchy, inherit their policies too:
+
+```ruby
+class VehiclePolicy < ApplicationPolicy
+  scope :owned do
+    query { |context:| Vehicle.where(owner_id: context.id) }
+    validate do |vehicle, errors, context:|
+      errors.add(:owner_id, :not_permitted) unless vehicle.owner_id == context.id
+    end
+  end
+
+  role :FleetManager do
+    permission :read, scopes: [:owned]
+    permission :update, scopes: [:owned]
+    accessible_fields [:name, :type], action: :update
+  end
+end
+
+class VanPolicy < VehiclePolicy
+end
+
+class TruckPolicy < VehiclePolicy
+  role :FleetManager do
+    permission :delete, scopes: [:owned]
+  end
+end
+```
+
+Vehicle permissions apply to both subtypes without a model resolver. Truck adds its own delete grant using Vehicle's inherited scope. Parent grants are stored once; scope conditions and arguments remain attached to the original grant.
+
+Parent default scopes remain mandatory and combine with child boundaries. Put a shared tenant boundary on Vehicle in tenant applications. Fields inherit per role/action unless the child supplies its own explicit entry. Ancestor lifecycle validators and field resolvers also apply. A child permission adds an alternative grant; it does not revoke broader parent access.
+
+Collection checks enforce subtype restrictions even through `policy_scope(Vehicle)`. The [core inheritance reference](https://github.com/NicolasJJensen/rails_writ/blob/main/docs/reference.md#rule-inheritance-and-sti) covers replacement, field fallback, and explicit model resolution.
+
 ## Controller helpers
 
 Include the usual Pundit module:
@@ -99,14 +137,46 @@ end
 | `policy_scope(Asset)` | Filters the saved relation using `:read`. |
 | `authorize @asset, :update?` | Checks saved access; create checks grant availability. |
 | `permitted_attributes(@asset)` | Reads Pundit's parameter root and permits the policy's field list. |
-| `authorize_proposed!(@asset)` | Checks dirty fields and proposed scope/lifecycle rules. |
-| `authorize_proposed!(@asset, attributes: input)` | Assigns input, then checks all supplied keys and proposed rules. |
+| `@asset = authorize_proposed!(@asset)` | Checks dirty fields and proposed rules; returns the correctly typed record. |
+| `@asset = authorize_proposed!(@asset, attributes: input)` | Assigns input, checks all supplied keys and proposed rules, and returns the record. |
 
 The proposed helper is available automatically, including when Pundit was already included before the adapter loaded. It does not save or replace ordinary `authorize`. It infers `:create`/`:update` from the record; `action:` overrides that inference.
 
-Omitted `attributes:` uses `changed_attribute_names_to_save`. Explicit `{}` means no submitted fields. Unpermitted `ActionController::Parameters` are rejected by Rails assignment. The policy hooks `permitted_attributes_for_create` and `permitted_attributes_for_update` use Writ's candidate fields; `:all` expands to model attribute names, not `permit!`.
+Omitted `attributes:` uses `changed_attribute_names_to_save`. Explicit `{}` supplies no field names; an STI conversion still checks the inheritance column. Unpermitted `ActionController::Parameters` are rejected by Rails assignment.
 
-A proposed failure raises `Writ::Pundit::ProposedAuthorizationError` with `record` and `result`, and attaches final errors to the record. Missing authority raises ordinary `Pundit::NotAuthorizedError`. See the main README for [HTML, Turbo, and JSON error handling](https://github.com/NicolasJJensen/rails_writ#rendering-errors).
+When the inheritance-column value changes, the helper automatically constructs the requested STI subtype and checks both original and destination authority. Keep the returned record before calling `save!`; the original Ruby instance cannot change its class in place. No special conversion option is needed. See [STI writes](https://github.com/NicolasJJensen/rails_writ/blob/main/docs/advanced-writes.md#changing-an-sti-type).
+
+A proposed failure raises `Writ::Pundit::ProposedAuthorizationError` with `record` and `result`, and attaches final errors to the record. Recover `error.record` in the rescue handler, since a proposed conversion can return a different instance. Missing authority raises ordinary `Pundit::NotAuthorizedError`. See the main README for [HTML, Turbo, and JSON error handling](https://github.com/NicolasJJensen/rails_writ#rendering-errors).
+
+## Permitted attributes
+
+Pundit reads the request parameters and calls the policy hook. The method precedence is:
+
+1. A host-defined action hook such as `permitted_attributes_for_update`.
+2. A host-defined generic `permitted_attributes` method.
+3. Writ's candidate fields for that action.
+
+A generic method supplies one input list for both create and update:
+
+```ruby
+# Inside AssetPolicy
+def permitted_attributes
+  [:name]
+end
+```
+
+An action-specific method can adapt the fallback with `super`:
+
+```ruby
+# Inside AssetPolicy
+def permitted_attributes_for_update
+  super - [:description]
+end
+```
+
+Without a generic host method, `super` uses Writ's candidate fields. With one, it uses that generic list. Writ's `:all` expands to model attribute names, not `permit!`. Create candidates do not run proposed-state validators against an empty record.
+
+Custom parameter hooks do not grant additional authority: `authorize_proposed!` still checks the submitted fields against Writ and validates the resulting record.
 
 ## Nested parameters
 

@@ -7,6 +7,7 @@ module Writ
         app.config.writ.definition_loaders << lambda do
           path = app.root.join('app/policies')
           Rails.autoloaders.main.eager_load_dir(path) if path.exist?
+          Writ::Pundit::Policy.register_policy_inheritances!
         end
       end
     end

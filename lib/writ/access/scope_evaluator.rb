@@ -20,7 +20,7 @@ module Writ
         def filter_records_by_context_and_permission(context, subject, permission, authorization_model: nil,
                                                      normalized_arguments: nil, base: nil, apply_default: true)
           authorization_model ||= Writ::Configuration.authorization_model_for(subject)
-          model_name = authorization_model.name
+          model_name = permission.model
           registry = Writ::Configuration.registry
 
           result = strip_ordering_and_limits(base || subject.all)
@@ -30,8 +30,9 @@ module Writ
           # Apply each scope from the permission
           scope_join_rows(permission).each do |join_row|
             validate_scope_model!(join_row.scope, model_name)
+            owner = join_row.scope.model
             scope_name = join_row.scope.name
-            callable = registry.get_scope_callable(model_name: model_name, scope_name: scope_name)
+            callable = registry.get_scope_callable(model_name: owner, scope_name: scope_name)
 
             unless callable
               raise Writ::MissingScopeError,
@@ -44,13 +45,13 @@ module Writ
                     "  end"
             end
 
-            args = resolve_arguments(registry, model_name, scope_name, join_row,
+            args = resolve_arguments(registry, owner, scope_name, join_row,
                                      normalized_arguments: normalized_arguments, permission: permission)
             return result.none if args == :invalid_denied
             # Scope implementations are host code and may mutate their argument
             # hash. Pass a copy so proposed matcher evaluation sees unchanged values.
             scope_query = Writ::CallableHelper.call_with_flexible_arity(callable, context, args: args&.deep_dup)
-            validate_scope_result!(scope_query, scope_name, model_name, subject, authorization_model)
+            validate_scope_result!(scope_query, scope_name, owner, subject, authorization_model)
             result = merge_scopes(result, scope_query)
           end
 
@@ -60,12 +61,22 @@ module Writ
         def default_scoped_records(context, subject, authorization_model = nil, base: nil)
           authorization_model ||= Writ::Configuration.authorization_model_for(subject)
           result = strip_ordering_and_limits(base || subject.all)
-          callable = Writ::Configuration.registry.get_default_scope(model_name: authorization_model.name)
-          return result unless callable
+          registry = Writ::Configuration.registry
+          default_scope_owners(authorization_model).reduce(result) do |current, owner|
+            callable = registry.get_default_scope(model_name: owner)
+            query = Writ::CallableHelper.call_with_flexible_arity(callable, context)
+            validate_scope_result!(query, 'default_scope', owner, subject, authorization_model)
+            merge_scopes(current, query)
+          end
+        end
 
-          query = Writ::CallableHelper.call_with_flexible_arity(callable, context)
-          validate_scope_result!(query, 'default_scope', authorization_model.name, subject, authorization_model)
-          merge_scopes(result, query)
+        def default_scope_owners(authorization_model)
+          registry = Writ::Configuration.registry
+          if Writ::Configuration.custom_authorization_model_resolver?
+            registry.default_scope_registered?(model_name: authorization_model.name) ? [authorization_model.name] : []
+          else
+            registry.default_scope_models(model_name: authorization_model.name)
+          end
         end
 
         # Validate a permission's stored scope arguments against the registered schemas.
@@ -179,7 +190,7 @@ module Writ
         private
 
         def validate_scope_model!(scope, model_name)
-          return if scope.model == model_name
+          return if Writ::Configuration.registry.scope_model_allowed?(scope_model: scope.model, permission_model: model_name)
 
           raise Writ::ScopeValidationError,
                 "Scope '#{scope.name}' belongs to model '#{scope.model}', not permission model '#{model_name}'"
@@ -190,7 +201,12 @@ module Writ
             raise Writ::InvalidScopeError,
                   "Scope '#{scope_name}' for '#{model_name}' must return an ActiveRecord::Relation, got #{query.class}"
           end
-          unless query.model == subject || query.model == authorization_model
+          allowed_models = [subject, authorization_model]
+          owner = model_name.safe_constantize
+          allowed_models << owner if owner.is_a?(Class) && owner < ActiveRecord::Base &&
+                                     subject <= owner && subject.base_class == owner.base_class &&
+                                     subject.table_name == owner.table_name
+          unless allowed_models.include?(query.model)
             raise Writ::InvalidScopeError,
                   "Scope '#{scope_name}' for '#{model_name}' must return a #{model_name} relation, got #{query.model.name}"
           end

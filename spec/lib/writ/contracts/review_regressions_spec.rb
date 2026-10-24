@@ -111,10 +111,25 @@ RSpec.describe 'Host integration regression contracts' do
 
   it 'supports settings from the generated configuration DSL' do
     old = Writ::Configuration.on_missing_condition
+    old_registry = Writ::Configuration.registry
+    old_blocks = Writ::Configuration.instance_variable_get(:@configure_blocks)&.dup
+    Writ::Configuration.instance_variable_set(:@registry, Writ::Logic::Registry.new)
+    Writ::Configuration.instance_variable_set(:@configure_blocks, [])
     Writ.configure { |config| config.on_missing_condition = :deny }
     expect(Writ::Configuration.on_missing_condition).to eq(:deny)
+
+    Writ::Configuration.on_missing_condition = :raise
+    Writ::Configuration.rebuild! {}
+    expect(Writ::Configuration.on_missing_condition).to eq(:deny)
+
+    Writ::Configuration.instance_variable_set(:@configure_blocks, [])
+    Writ::Configuration.on_missing_condition = :raise
+    Writ::Configuration.rebuild! {}
+    expect(Writ::Configuration.on_missing_condition).to eq(:raise)
   ensure
     Writ::Configuration.on_missing_condition = old
+    Writ::Configuration.instance_variable_set(:@registry, old_registry)
+    Writ::Configuration.instance_variable_set(:@configure_blocks, old_blocks)
   end
 
   it 'preserves explicit model configuration across reset' do

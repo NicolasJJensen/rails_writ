@@ -9,6 +9,7 @@ module Writ
     # (to evaluate permissions at runtime).
     class Registry
       def initialize
+        @model_inheritance = {}
         @scope_definitions = {}
         @default_scope_definitions = {}
         @condition_definitions = {}
@@ -24,6 +25,7 @@ module Writ
 
       def dup_for_configuration
         copy = self.class.new
+        copy.instance_variable_set(:@model_inheritance, @model_inheritance.dup)
         copy.instance_variable_set(:@scope_definitions, @scope_definitions.deep_dup)
         copy.instance_variable_set(:@default_scope_definitions, @default_scope_definitions.deep_dup)
         copy.instance_variable_set(:@condition_definitions, @condition_definitions.deep_dup)
@@ -35,6 +37,53 @@ module Writ
         copy.instance_variable_set(:@update_validators, copy_validator_store(@update_validators))
         copy.instance_variable_set(:@missing_default_scope_exemptions, @missing_default_scope_exemptions.deep_dup)
         copy
+      end
+
+      def register_model_inheritance(model_name:, parent_model_name:)
+        model_name = model_name.to_s
+        parent_model_name = parent_model_name.to_s
+        if model_name.empty? || parent_model_name.empty? || model_name == parent_model_name
+          raise Writ::ConfigurationError, 'Rule inheritance requires two distinct named models'
+        end
+        existing = @model_inheritance[model_name]
+        return existing if existing == parent_model_name
+        if existing && existing != parent_model_name
+          raise Writ::ConfigurationError, "#{model_name} already inherits rules from #{existing}"
+        end
+        model = model_name.safe_constantize
+        parent = parent_model_name.safe_constantize
+        if !model.nil? && !parent.nil? && !valid_model_inheritance?(model, parent)
+          raise Writ::ConfigurationError, inheritance_error(model_name, parent_model_name)
+        end
+        if model_lineage(model_name: parent_model_name).include?(model_name)
+          raise Writ::ConfigurationError, "Rule inheritance cycle involving #{model_name}"
+        end
+        @model_inheritance[model_name] = parent_model_name
+      end
+
+      def model_lineage(model_name:)
+        lineage = []
+        current = model_name.to_s
+        while current
+          raise Writ::ConfigurationError, "Rule inheritance cycle involving #{current}" if lineage.include?(current)
+          lineage << current
+          current = @model_inheritance[current]
+        end
+        lineage
+      end
+
+      def scope_owner(model_name:, scope_name:)
+        model_lineage(model_name: model_name).find do |name|
+          @scope_definitions.dig(name, scope_name.to_s)
+        end
+      end
+
+      def scope_model_allowed?(scope_model:, permission_model:)
+        model_lineage(model_name: permission_model).include?(scope_model.to_s)
+      end
+
+      def default_scope_models(model_name:)
+        model_lineage(model_name: model_name).reverse.select { |name| @default_scope_definitions.key?(name) }
       end
 
       # Register a scope block for a model and scope
@@ -67,6 +116,8 @@ module Writ
         model_key = model_name.to_s
         scope_key = scope_name.to_s
         existing = @scope_definitions.dig(model_key, scope_key)
+        inherited_owner = model_lineage(model_name: model_key).drop(1).find { |name| @scope_definitions.dig(name, scope_key) }
+        existing ||= @scope_definitions.dig(inherited_owner, scope_key) if inherited_owner
         # A fresh registry only removes declarations from an earlier generation.
         # A repeated key in this generation remains an ambiguous host declaration.
         reject_duplicate_declaration!("scope '#{scope_key}' on '#{model_key}'", existing, replace, source_location) if existing
@@ -76,7 +127,8 @@ module Writ
           arguments: arguments,
           matches: matches,
           validate: validate,
-          declaration_location: source_location
+          declaration_location: source_location,
+          replaces_inherited: replace
         }
         resolved
       end
@@ -250,12 +302,12 @@ module Writ
         register_validator(@update_validators, model_name, block, 'update_validator')
       end
 
-      def creation_validators_for(model_name:)
-        validators_for(@creation_validators, model_name)
+      def creation_validators_for(model_name:, include_global: true, include_inherited: true)
+        validators_for(@creation_validators, model_name, include_global: include_global, include_inherited: include_inherited)
       end
 
-      def update_validators_for(model_name:)
-        validators_for(@update_validators, model_name)
+      def update_validators_for(model_name:, include_global: true, include_inherited: true)
+        validators_for(@update_validators, model_name, include_global: include_global, include_inherited: include_inherited)
       end
 
       # Remove a scope callable from the registry
@@ -469,7 +521,9 @@ module Writ
       # @param model_name [String] The model name
       # @return [Hash] Hash of scope_name => callable (defensive copy)
       def scope_callables_for(model_name:)
-        (@scope_definitions[model_name.to_s] || {}).transform_values { |definition| definition[:callable] }
+        model_lineage(model_name: model_name).reverse.each_with_object({}) do |name, result|
+          (@scope_definitions[name] || {}).each { |scope, definition| result[scope] = definition[:callable] }
+        end
       end
 
       # Get all registered scope callables
@@ -489,7 +543,7 @@ module Writ
       # Get list of all models that have any model-specific configuration.
       # @return [Array<String>] Array of model names
       def all_configured_models
-        model_set = Set.new
+        model_set = Set.new(@model_inheritance.keys + @model_inheritance.values)
         model_set.merge(@scope_definitions.keys)
         model_set.merge(@default_scope_definitions.keys)
         @permissions.each_value { |role_models| model_set.merge(role_models.keys) }
@@ -517,6 +571,7 @@ module Writ
 
       def clear!
         @reloading = true
+        @model_inheritance.clear
         @scope_definitions.clear
         @default_scope_definitions.clear
         @condition_definitions.clear
@@ -553,12 +608,14 @@ module Writ
       # @raise [ArgumentError] if any referenced scope or condition is not registered
       def validate_references!
         errors = []
+        validate_model_inheritance!(errors)
+        validate_inherited_scope_replacements!(errors)
 
         @permissions.each do |role, models|
           models.each do |model, perms|
             perms.each do |perm|
               perm[:scopes].each do |scope_name|
-                unless @scope_definitions.dig(model, scope_name, :callable)
+                unless scope_owner(model_name: model, scope_name: scope_name)
                   errors << "#{role}/#{model}/#{perm[:action]} references unregistered scope '#{scope_name}'"
                 end
               end
@@ -582,7 +639,7 @@ module Writ
 
         @accessible_fields.each do |role, models|
           models.each_key do |model|
-            unless permission_models.include?(model)
+            unless model_lineage(model_name: model).any? { |name| permission_models.include?(name) }
               logger.warn(
                 "[Writ] Role '#{role}' has accessible_fields for '#{model}' " \
                 "but no permissions reference that model. Possible typo?"
@@ -594,7 +651,7 @@ module Writ
         # A model scope without a default boundary can expose records before permission scopes narrow the relation.
         missing_default_scope_mode = Writ::Configuration.multi_tenant? ? Writ::Configuration.on_missing_default_scope : :skip
         @scope_definitions.each_key do |model_name|
-          next if @default_scope_definitions.key?(model_name)
+          next if default_scope_models(model_name: model_name).any?
           next if @missing_default_scope_exemptions.include?(model_name)
 
           message = "Model '#{model_name}' has scopes but no default_scope. This may expose records across tenants."
@@ -613,6 +670,35 @@ module Writ
       end
 
       private
+
+      def validate_model_inheritance!(errors)
+        @model_inheritance.each do |model_name, parent_name|
+          model = model_name.safe_constantize
+          parent = parent_name.safe_constantize
+          errors << inheritance_error(model_name, parent_name) unless valid_model_inheritance?(model, parent)
+        end
+      end
+
+      def valid_model_inheritance?(model, parent)
+        model.is_a?(Class) && parent.is_a?(Class) && model < ActiveRecord::Base &&
+          parent < ActiveRecord::Base && model < parent && model.base_class == parent.base_class &&
+          model.table_name == parent.table_name
+      end
+
+      def inheritance_error(model_name, parent_name)
+        "#{model_name} cannot inherit rules from #{parent_name}; models must share an STI hierarchy and table"
+      end
+
+      def validate_inherited_scope_replacements!(errors)
+        @scope_definitions.each do |model, definitions|
+          definitions.each do |name, definition|
+            next if definition[:replaces_inherited]
+            inherited = model_lineage(model_name: model).drop(1).find { |ancestor| @scope_definitions.dig(ancestor, name) }
+            next unless inherited
+            errors << "Scope '#{name}' on '#{model}' redefines an inherited scope from '#{inherited}'; pass replace: true"
+          end
+        end
+      end
 
       def copy_validator_store(store)
         Hash.new { |hash, key| hash[key] = [] }.tap do |copy|
@@ -708,10 +794,10 @@ module Writ
         resolved
       end
 
-      def validators_for(store, model_name)
-        global = store[nil] || []
-        local = store[model_name.to_s] || []
-        global + local
+      def validators_for(store, model_name, include_global:, include_inherited:)
+        global = include_global ? (store[nil] || []) : []
+        names = include_inherited ? model_lineage(model_name: model_name).reverse : [model_name.to_s]
+        global + names.flat_map { |name| store[name] || [] }
       end
 
       def logger
@@ -725,7 +811,8 @@ module Writ
           (arguments.keys - names).each { |name| errors << "#{role}/#{model} has arguments for unattached #{name}" }
           names.each do |name|
             args = arguments[name] || {}
-            schema = names_key == :scopes ? scope_arguments_schema(model_name: model, scope_name: name) : condition_arguments_schema(name: name)
+            owner = scope_owner(model_name: model, scope_name: name) if names_key == :scopes
+            schema = names_key == :scopes ? scope_arguments_schema(model_name: owner, scope_name: name) : condition_arguments_schema(name: name)
             if schema.nil?
               errors << "#{role}/#{model}/#{perm[:action]} supplies arguments for '#{name}' which declares no argument schema" if args.any?
               next

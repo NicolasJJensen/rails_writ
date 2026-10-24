@@ -7,13 +7,14 @@ class PermissionScope < ApplicationRecord
   validates :scope_id, uniqueness: { scope: :permission_id }
   validate :arguments_is_a_hash
   validate :scope_model_matches_permission
+  validate :scope_name_is_unique_for_permission
   validate :arguments_match_schema
 
   private
 
   def scope_model_matches_permission
     return unless permission && scope
-    return if scope.model == permission.model
+    return if Writ::Configuration.scope_model_allowed?(scope_model: scope.model, permission_model: permission.model)
 
     errors.add(:scope, "model '#{scope.model}' does not match permission model '#{permission.model}'")
   end

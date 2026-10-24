@@ -51,6 +51,42 @@ RSpec.describe 'Pundit permitted attributes' do
       .to eq('name' => 'Nested', 'service_industries' => [{ 'name' => 'Allowed' }])
   end
 
+  it 'uses a host generic permitted_attributes hook for both create and update' do
+    policy_class = Class.new(Writ::Pundit::Policy) do
+      def permitted_attributes
+        [:name, { service_industries: [:name] }]
+      end
+    end
+    policy = Class.new(policy_class).new(user, record)
+    allow(controller).to receive(:policy).with(record).and_return(policy)
+    controller.params = { asset: { name: 'Allowed', description: 'Dropped', service_industries: [{ name: 'Nested', secret: 'Dropped' }] } }
+
+    %i[create update].each do |action|
+      expect(controller.send(:permitted_attributes, record, action).to_h)
+        .to eq('name' => 'Allowed', 'service_industries' => [{ 'name' => 'Nested' }])
+    end
+  end
+
+  it 'prefers a host action-specific hook over the generic hook' do
+    policy_class = Class.new(Writ::Pundit::Policy) do
+      def permitted_attributes = [:description]
+      def permitted_attributes_for_update = [:name]
+    end
+    policy = Class.new(policy_class).new(user, record)
+    expect(policy.permitted_attributes_for_create).to eq([:description])
+    expect(policy.permitted_attributes_for_update).to eq([:name])
+  end
+
+  it 'lets action-specific hooks transform computed Writ fields through super' do
+    create(:permission, role: role, action: :update)
+    policy = Class.new(Writ::Pundit::Policy) do
+      def permitted_attributes_for_update
+        super + [{ service_industries: [:name] }]
+      end
+    end.new(user, record)
+    expect(policy.permitted_attributes_for_update).to eq([:name, { service_industries: [:name] }])
+  end
+
   it 'expands all fields only to actual model attributes and never permits arbitrary nested data' do
     role.update!(accessible_fields: { 'Asset' => nil })
     create(:permission, role: role, action: :update)

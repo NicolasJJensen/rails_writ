@@ -10,11 +10,14 @@
 | `authorization` with a saved record | Checks saved SQL membership. |
 | `authorization` with a relation or array | Every record must be allowed. Empty collections pass. |
 | `authorization` with a new record and `:create` | Checks create-grant availability; does not validate proposed attributes. |
+| `propose` with a new or persisted record | Assigns optional attributes, resolves STI changes, and returns the proposed record with its field/state decision. Infers create/update unless `action:` is supplied. |
 | `validation` with a new record and `:create` | Checks conditions, scope validators, and creation validators. |
 | `validation` with a persisted record and `:update` | Checks proposed attributes and update validators. Primary keys must be unchanged. |
 | `filter` with a model or relation | Returns a lazy relation containing allowed records. |
 
-`validation` also accepts arrays, with an empty array allowed. It rejects model classes and relations. Persisted records may use read/delete/custom actions for local scope checks; lifecycle validators apply only to their matching create/update actions.
+`propose` returns `Writ::Access::ProposalResult`, with `record` and `result` accessors. Keep its record before saving; STI conversion can return a different instance. It does not save or apply errors automatically. Omitted `attributes:` uses dirty tracking; explicit attributes check every supplied key, including unchanged values. A type conversion also checks the inheritance column, even when it was not supplied in `attributes:`. The adapter uses the same proposal operation and applies its final errors.
+
+`validation` also accepts arrays, with an empty array allowed. It rejects model classes and relations. Its record must already have the correct STI class, and direct type changes during update are rejected; use `propose` for conversion. Persisted records may use read/delete/custom actions for local scope checks; lifecycle validators apply only to their matching create/update actions.
 
 `grant_available?` ignores record scopes. Use it for potential navigation/action availability, never as permission to access a particular record. `potential_permissions` and `declared_fields` are metadata, not record authorization.
 
@@ -31,7 +34,7 @@ end
 
 Results are immutable. Each denied grant exposes `permission_id`, `reason`, `failed_conditions`, and immutable `errors` snapshots. Proposed results expose final `errors`; `apply_errors_to(record)` imports them without removing unrelated errors. Success has an empty `denied_grants` array.
 
-Reasons include `:no_permission_source`, `:no_grants`, `:scope_mismatch`, `:proposed_scope_mismatch`, `:validator_rejected`, `:condition_error`, `:missing_condition`, `:condition_arguments_invalid`, and `:scope_arguments_invalid`. A configuration error can raise instead of returning a denial, according to the failure modes below.
+Reasons include `:no_permission_source`, `:no_grants`, `:scope_mismatch`, `:proposed_scope_mismatch`, `:forbidden_fields`, `:invalid_sti_type`, `:validator_rejected`, `:condition_error`, `:missing_condition`, `:condition_arguments_invalid`, and `:scope_arguments_invalid`. A configuration error can raise instead of returning a denial, according to the failure modes below.
 
 Applications own messages, translations, and HTTP responses. Avoid logging sensitive context or stored arguments indiscriminately.
 
@@ -154,11 +157,51 @@ A resolver can return computed presentation keys; your serializer must implement
 
 Resolver context is the same context used for authorization, including the selected tenant. Preserve `:all` unless deliberately replacing the complete field decision. Nested associations need separate authorization.
 
-`declared_fields` unions declared action fields, returning `:all` if any action is unrestricted. Class arguments follow the STI resolver; string arguments address stored model names directly. Existing stored arrays/nil retain their legacy all-action meaning and are preserved by generation.
+`declared_fields` unions declared action fields, returning `:all` if any action is unrestricted. Class arguments follow rule inheritance or an explicit model resolver; string arguments address stored model names directly. Existing stored arrays/nil retain their legacy all-action meaning and are preserved by generation.
 
-## STI model resolution
+## Rule inheritance and STI
 
-By default each model uses its exact model name. To share rules across one STI hierarchy:
+The Pundit adapter registers rule inheritance when a model's policy inherits from its ancestor's policy. Core-only applications declare the same relationship directly:
+
+```ruby
+Writ.configure do
+  inherit_rules model: Van, from: Vehicle
+  inherit_rules model: Truck, from: Vehicle
+
+  permission :read, model: Vehicle, role: :FleetManager
+  permission :update, model: Vehicle, role: :FleetManager
+  permission :delete, model: Truck, role: :FleetManager
+end
+```
+
+Both models must belong to the same ActiveRecord STI hierarchy and use the same table. No inheritance is assumed from two unrelated policies sharing a utility superclass. Without a registered relationship or explicit resolver, rules use the exact model name.
+
+| Rule | Inheritance behavior |
+|---|---|
+| Stored permissions | Ancestor grants apply to descendants. Child grants apply only to that child's subtree. |
+| Named scopes | Children can reference ancestor definitions and their argument schemas. Stored attachments retain the defining scope's identity. |
+| Default scopes | All ancestor boundaries and the child's boundary must pass. |
+| Fields | For each role/action, the nearest explicit model entry wins; missing entries inherit before `field_default` applies. Fields from contributing roles then combine. |
+| Field resolvers | Ancestor resolver chains run before child chains; the usual global inclusion settings still apply. |
+| Lifecycle validators | Global and ancestor validators run before child validators, with each registration run once. |
+
+These rules apply to both shared and tenant roles. A Vehicle default scope can enforce the tenant boundary for the entire hierarchy. Shared parent grants are stored once, so editing a Vehicle grant affects descendant access without synchronizing copies.
+
+An explicit child field entry can be a list, `[]`, or `:all`. It replaces only that role's inherited entry for that action; it does not remove fields granted by another contributing role.
+
+Named scopes resolve from the child toward its ancestors. Redefining an inherited name requires `replace: true`. That creates a child definition; it does not rewrite existing attachments to the parent's scope. The parent's original grants keep their original scope, while new child declarations resolve to the child definition. Scope arguments remain specific to each permission attachment.
+
+Permissions remain additive. A scoped child update grant cannot narrow an inherited unrestricted update grant; put mandatory child restrictions in a child default scope.
+
+### Collections
+
+`filter(records: Truck)` preserves the Truck type constraint. `filter(records: Vehicle)` evaluates each subtype with its applicable grants and default boundaries. A general Vehicle grant cannot bypass a Truck default scope, and a Truck grant cannot expose Van rows. Relations stay lazy and preserve caller restrictions.
+
+Individual-record checks, mixed STI arrays, batch field decisions, and collection filtering follow the same inherited rules. Ordinary model validations and callbacks are Rails behavior; they are not copied into Writ's registry.
+
+### Explicit model resolution
+
+An application can deliberately select one shared rule set instead of composing inherited rules:
 
 ```ruby
 Writ.configure do |config|
@@ -166,9 +209,9 @@ Writ.configure do |config|
 end
 ```
 
-The resolver must return the model or an ancestor in the same hierarchy/table. Grants are not merged across models. Filters retain the concrete subtype and caller restrictions. A base-class query uses base-class rules for every row; exact-model mode does not dispatch each returned row to subclass rules.
+The resolver must return the model or an ancestor in the same hierarchy/table. This explicit override keeps single-model behavior: grants are not merged across models, and subtype declarations do not add restrictions to the selected shared rule set. Filters retain the concrete subtype and caller restrictions.
 
-Choose the same strategy for list and individual-record access, in either tenancy mode.
+Use policy inheritance or `inherit_rules` for ordinary shared parent rules with subtype additions. Reserve a resolver for applications deliberately choosing one authorization model for every operation.
 
 ## Reloading and standalone use
 

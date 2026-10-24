@@ -9,6 +9,16 @@ module Writ
 
     private
 
+    def scope_name_is_unique_for_permission
+      return unless permission && scope
+
+      duplicate = permission.permission_scopes.any? do |attachment|
+        next false if attachment.equal?(self) || (persisted? && attachment.id == id) || attachment.marked_for_destruction?
+        attachment.scope&.name == scope.name
+      end
+      errors.add(:scope, "name '#{scope.name}' is already attached to this permission") if duplicate
+    end
+
     def arguments_is_a_hash
       errors.add(:arguments, "must be a hash") unless arguments.is_a?(Hash)
     end

@@ -8,10 +8,11 @@ module Writ
     # retaining their distinct membership and proposed-state checks.
     class PermissionPreparation
       def initialize(context:, action:, authorization_model:, includes: [], evaluated: false,
-                     validate_scopes: true, collect_denials: false)
+                     validate_scopes: true, collect_denials: false, authorization_models: nil)
         @context = context
         @action = action
         @authorization_model = authorization_model
+        @authorization_models = authorization_models || [authorization_model]
         @includes = includes
         @evaluated = evaluated
         @validate_scopes = validate_scopes
@@ -56,7 +57,7 @@ module Writ
       def load_permissions(source)
         return [] unless source
 
-        relation = source.where(model: @authorization_model.name, action: @action)
+        relation = source.where(model: @authorization_models.map(&:name), action: @action)
         relation = relation.includes(@includes) unless @includes.blank?
         relation.includes(permission_scopes: :scope, permission_conditions: :condition).to_a
       end

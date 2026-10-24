@@ -82,7 +82,7 @@ module Writ
 
       permission_scopes.each do |attachment|
         next if attachment.marked_for_destruction? || attachment.scope.nil?
-        if attachment.scope.model != model
+        unless Writ::Configuration.scope_model_allowed?(scope_model: attachment.scope.model, permission_model: model)
           errors.add(:model, "does not match attached scope '#{attachment.scope.name}' (#{attachment.scope.model})")
         end
       end
@@ -139,7 +139,8 @@ module Writ
       permission_scopes.reset
       permission_scopes.destroy_all
       desired.each do |name, args|
-        scope = ap_find_or_create(scope_class, model: model, name: name.to_s)
+        owner = Writ::Configuration.scope_owner(model_name: model, scope_name: name) || model
+        scope = ap_find_or_create(scope_class, model: owner, name: name.to_s)
         permission_scopes.create!(scope: scope, arguments: args || {})
       end
       permission_scopes.reset

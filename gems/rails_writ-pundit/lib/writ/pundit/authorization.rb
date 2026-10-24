@@ -10,19 +10,16 @@ module Writ
 
       def authorize_proposed!(record, action: nil, attributes: ATTRIBUTES_NOT_PROVIDED)
         action ||= record.new_record? ? :create : :update
-        submitted_fields = if attributes.equal?(ATTRIBUTES_NOT_PROVIDED)
-          record.changed_attribute_names_to_save
-        else
-          record.assign_attributes(attributes)
-          attributes.keys
-        end
-        result = Writ::Access.validation(subject: record, action: action, context: pundit_user,
-                                         submitted_fields: submitted_fields)
+        options = { subject: record, action: action, context: pundit_user }
+        options[:attributes] = attributes unless attributes.equal?(ATTRIBUTES_NOT_PROVIDED)
+        proposal = Writ::Access.propose(**options)
+        record = proposal.record
+        result = proposal.result
         result.apply_errors_to(record)
         return record if result.allowed?
 
         query = :"#{action}?"
-        if %i[proposed_scope_mismatch forbidden_fields validator_rejected].include?(result.reason)
+        if %i[proposed_scope_mismatch forbidden_fields validator_rejected invalid_sti_type].include?(result.reason)
           raise ProposedAuthorizationError.new(record: record, result: result, query: query)
         end
 

@@ -8,6 +8,7 @@ module Writ
       attr_reader :context, :record
 
       def initialize(context, record)
+        self.class.register_rule_inheritance!
         @context = context
         @record = record
       end
@@ -49,10 +50,14 @@ module Writ
       end
 
       def permitted_attributes_for_create
+        return permitted_attributes if respond_to?(:permitted_attributes)
+
         input_attributes(:create)
       end
 
       def permitted_attributes_for_update
+        return permitted_attributes if respond_to?(:permitted_attributes)
+
         input_attributes(:update)
       end
 

@@ -8,20 +8,23 @@ module Writ
       def proposed_grant_errors(context, record, permission, model, authorization_model, normalized_arguments: nil)
         registry = Configuration.registry
         errors = ActiveModel::Errors.new(record)
-        if registry.default_scope_registered?(model_name: authorization_model.name) || model.default_scopes.any?
+        defaults = ScopeEvaluator.default_scope_owners(authorization_model)
+        defaults = [authorization_model.name] if defaults.empty? && model.default_scopes.any?
+        defaults.each do |owner|
           evaluate_proposed_scope(context, record, errors,
-                                  registry.get_default_scope_matcher(model_name: authorization_model.name),
-                                  registry.get_default_scope_validator(model_name: authorization_model.name),
+                                  registry.get_default_scope_matcher(model_name: owner),
+                                  registry.get_default_scope_validator(model_name: owner),
                                   'default_scope', model)
         end
 
         permission.permission_scopes.each do |attachment|
           name = attachment.scope.name
-          args = ScopeEvaluator.resolve_arguments(registry, authorization_model.name, name, attachment,
+          owner = attachment.scope.model
+          args = ScopeEvaluator.resolve_arguments(registry, owner, name, attachment,
                                                   normalized_arguments: normalized_arguments)
           evaluate_proposed_scope(context, record, errors,
-                                  registry.get_scope_matcher(model_name: authorization_model.name, scope_name: name),
-                                  registry.get_scope_validator(model_name: authorization_model.name, scope_name: name),
+                                  registry.get_scope_matcher(model_name: owner, scope_name: name),
+                                  registry.get_scope_validator(model_name: owner, scope_name: name),
                                   name, model, args)
         end
         errors
@@ -29,16 +32,19 @@ module Writ
 
       def preflight_proposed_matchers!(permissions, model, authorization_model)
         registry = Configuration.registry
-        default_required = registry.default_scope_registered?(model_name: authorization_model.name) || model.default_scopes.any?
-        if default_required && !registry.get_default_scope_matcher(model_name: authorization_model.name) &&
-           !registry.get_default_scope_validator(model_name: authorization_model.name)
-          missing_matcher!(model, 'default_scope')
+        defaults = ScopeEvaluator.default_scope_owners(authorization_model)
+        defaults = [authorization_model.name] if defaults.empty? && model.default_scopes.any?
+        defaults.each do |owner|
+          unless registry.get_default_scope_matcher(model_name: owner) || registry.get_default_scope_validator(model_name: owner)
+            missing_matcher!(owner.constantize, 'default_scope')
+          end
         end
         permissions.each do |permission|
           permission.permission_scopes.each do |attachment|
             name = attachment.scope.name
-            next if registry.get_scope_matcher(model_name: authorization_model.name, scope_name: name) ||
-                    registry.get_scope_validator(model_name: authorization_model.name, scope_name: name)
+            owner = attachment.scope.model
+            next if registry.get_scope_matcher(model_name: owner, scope_name: name) ||
+                    registry.get_scope_validator(model_name: owner, scope_name: name)
 
             missing_matcher!(model, name)
           end
@@ -63,7 +69,11 @@ module Writ
         registry = Configuration.registry
         method = action.to_s == 'create' ? :creation_validators_for : :update_validators_for
         errors = ActiveModel::Errors.new(record)
-        registry.public_send(method, model_name: model.name).each do |validator|
+        Array(model).flat_map do |candidate|
+          metadata = Configuration.authorization_model_for(candidate)
+          registry.public_send(method, model_name: metadata.name,
+                                include_inherited: !Configuration.custom_authorization_model_resolver?)
+        end.uniq.each do |validator|
           accepts_errors = validator.parameters.any? { |kind, name| %i[key keyreq].include?(kind) && name == :errors }
           if accepts_errors
             validator_errors = ActiveModel::Errors.new(record)

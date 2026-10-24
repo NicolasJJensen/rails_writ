@@ -58,7 +58,7 @@ module Writ
                                                           normalized_arguments: prepared.normalized_arguments).empty?
         end
         if record.is_a?(ActiveRecord::Base) && record.new_record? && action.to_s == 'create' && matching.any?
-          matching = [] unless run_action_validators(context, record, :create, authorization_model).empty?
+          matching = [] unless run_action_validators(context, record, :create, model).empty?
         end
         resolve_fields(context, action, record, authorization_model, matching.map(&:role).uniq)
       end
@@ -75,12 +75,15 @@ module Writ
         groups = records.group_by(&:class).map do |model, group|
           [model, Configuration.authorization_model_for(model), group]
         end
-        authorization_models = groups.map { |(_, authorization_model, _)| authorization_model }.uniq
-        unless authorization_models.one?
-          raise ArgumentError, 'Batch records must have the same model or resolve to one authorization model'
+        roots = groups.map { |(_, metadata_model, _)| metadata_models(metadata_model).last.name }.uniq
+        unless roots.one?
+          raise ArgumentError, 'Batch records must have the same model or share an authorization hierarchy'
         end
-        authorization_model = authorization_models.first
-        prepared = prepare_permissions(context, action, authorization_model, includes: [:role])
+        authorization_models = groups.flat_map do |_, metadata_model, _|
+          metadata_models(metadata_model)
+        end.uniq
+        prepared = prepare_permissions(context, action, authorization_models.first,
+                                       authorization_models: authorization_models, includes: [:role])
         permissions_by_role = prepared.valid.group_by(&:role)
         groups.flat_map do |model, authorization_model, group|
           pk = primary_key!(model)
@@ -104,8 +107,7 @@ module Writ
         return [] if roles.empty?
         fields = []
         roles.each do |role|
-          value = (role.accessible_fields || {}).fetch(model.name) { Configuration.field_default }
-          value = value.fetch(action.to_s) { Configuration.field_default } if value.is_a?(Hash)
+          value = inherited_role_fields(role, model, action)
           if value.nil? || value == :all
             fields = :all
             break
@@ -119,10 +121,23 @@ module Writ
         fields == :all ? :all : fields.map(&:to_s).uniq
       end
 
+      def inherited_role_fields(role, model, action)
+        metadata = role.accessible_fields || {}
+        metadata_models(model).map(&:name).each do |name|
+          next unless metadata.key?(name)
+          value = metadata[name]
+          return value unless value.is_a?(Hash)
+          return value[action.to_s] if value.key?(action.to_s)
+        end
+        Configuration.field_default
+      end
+
       def apply_field_resolvers(context, action, record, model, fields)
         registry = Configuration.registry
         global = registry.field_resolvers_for(model_name: nil)
-        local = registry.field_resolvers_for(model_name: model.name)
+        local = metadata_models(model).map(&:name).reverse.flat_map do |name|
+          registry.field_resolvers_for(model_name: name)
+        end
         resolvers = if local.any?
           local.any? { |definition| definition[:include_global] } ? global + local : local
         else

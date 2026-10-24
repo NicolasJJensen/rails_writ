@@ -22,6 +22,10 @@ module Writ
         define_method("#{name}=") { |value| @configuration.public_send("#{name}=", value) }
       end
 
+      def inherit_rules(model:, from:)
+        @configuration.register_model_inheritance(model_name: model.name, parent_model_name: from.name)
+      end
+
       def current_options
         @option_stack.reduce({}) { |acc, opts| acc.merge(opts) }
       end

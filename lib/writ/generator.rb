@@ -96,7 +96,7 @@ module Writ
           # cleanup destructive. Retire renamed roles through an explicit host migration.
           next unless role_config
 
-          configured_sigs = configured_permission_signatures(role_config[:permissions] || [])
+          configured_sigs = configured_permission_signatures(role_config[:permissions] || [], registry: registry)
           retired_permissions = Set.new
 
           role.permissions.each do |perm|
@@ -263,10 +263,10 @@ module Writ
       # A permission's identity is its action, model, scopes (names + arguments), and
       # conditions (names + arguments). Any difference — including argument values — is a
       # distinct identity for provenance. Existing model/action grants are not replaced.
-      def permission_signature_from_config(config)
+      def permission_signature_from_config(config, registry: Writ::Configuration.registry)
         canon = Writ::Configuration.method(:canonical_arguments)
         [config[:action].to_s, config[:model],
-         (config[:scopes] || []).map(&:to_s).sort,
+         (config[:scopes] || []).map { |name| [registry.scope_owner(model_name: config[:model], scope_name: name) || config[:model], name.to_s] }.sort,
          canon.call(config[:scope_arguments] || {}),
          (config[:conditions] || []).map(&:to_s).sort,
          canon.call(config[:condition_arguments] || {})]
@@ -275,7 +275,8 @@ module Writ
       def permission_signature_from_record(record)
         canon = Writ::Configuration.method(:canonical_arguments)
         [record.action, record.model,
-         record.scopes.sort, canon.call(record.scope_arguments),
+         record.permission_scopes.map { |attachment| [attachment.scope.model, attachment.scope.name] }.sort,
+         canon.call(record.scope_arguments),
          record.conditions.sort, canon.call(record.condition_arguments)]
       end
 
@@ -286,8 +287,8 @@ module Writ
         end
       end
 
-      def configured_permission_signatures(permissions_config)
-        Set.new(permissions_config.map { |pa| permission_signature_from_config(pa) })
+      def configured_permission_signatures(permissions_config, registry: Writ::Configuration.registry)
+        Set.new(permissions_config.map { |pa| permission_signature_from_config(pa, registry: registry) })
       end
 
       def build_roles_hash(roles, permissions_by_role)

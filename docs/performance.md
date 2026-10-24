@@ -12,20 +12,19 @@ fields_by_record = Writ::Access.fields_for_many(context: actor, action: :read, r
 # { asset => ["name", ...] }; each value can also be :all or [].
 ```
 
-The input must contain persisted records resolving to one authorization model, with a loaded
-single-column primary key. Composite primary-key models are not supported by batch field
-decisions.
+The input must contain persisted records belonging to one registered authorization hierarchy
+or resolving to one explicit authorization model, with a loaded single-column primary key.
+Mixed Van and Truck records are supported when they share inherited Vehicle rules. Unrelated
+models and composite primary keys are not supported by batch field decisions.
 The result maps each record to its effective fields; denied records receive `[]`.
 An empty batch returns `{}`.
 
 Both tenancy modes use the same batching API. In multi-tenant mode pass a context restricted to one selected tenant; do not combine tenant contexts within a batch.
 
-For each call, the gem loads permission metadata once, then runs one membership query for
-each contributing role and concrete record-class group. A page of 50 `Asset` records with
-three grants on one role therefore uses one membership query, not 50. A heterogeneous STI
-batch with `StiTruck` and `StiVan` records that both resolve to `StiAsset`, and three
-contributing roles, uses six membership queries: two concrete subtype groups times three
-roles. Resolvers still run once per authorized record.
+The gem groups membership checks by contributing role and concrete record class instead of
+issuing a query for every record. Inherited grants and subtype boundaries participate in those
+checks. Resolvers still run once per authorized record. Measure query counts for the application's
+role and subtype mix; adding distinct subtype rules can add query branches and groups.
 
 Keep batches bounded and group heterogeneous data when that query shape matters. Keep
 context stable during a batch; there is no result cache across calls. Field queries do not

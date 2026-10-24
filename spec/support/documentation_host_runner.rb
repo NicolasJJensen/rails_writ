@@ -13,6 +13,9 @@ end
 class User < ApplicationRecord; end
 class Organisation < ApplicationRecord; end
 class Asset < ApplicationRecord; end
+class Vehicle < ApplicationRecord; end
+class Truck < Vehicle; end
+class Van < Vehicle; end
 
 ActiveRecord::Base.transaction do
   connection = ActiveRecord::Base.connection
@@ -25,6 +28,13 @@ ActiveRecord::Base.transaction do
     table.bigint :organisation_id if multi_tenant
     table.string :name
     table.string :description
+  end
+  connection.create_table(:vehicles) do |table|
+    table.string :type
+    table.bigint :owner_id
+    table.bigint :organisation_id if multi_tenant
+    table.string :name
+    table.string :status
   end
   Dir[File.join(directory, 'db/migrate/*.rb')].sort.each do |file|
     code = File.read(file).sub(/class \w+ < ActiveRecord::Migration(\[[^\]]+\])/, 'Class.new(ActiveRecord::Migration\1) do')
@@ -66,6 +76,71 @@ ActiveRecord::Base.transaction do
     end
   end
 
+  model_option = integration == 'pundit' ? '' : ', model: Vehicle'
+  vehicle_rules = <<~RUBY
+    scope :fleet_owned#{model_option} do
+      query { |context:| Vehicle.where(owner_id: context.id) }
+      validate do |vehicle, errors, context:|
+        errors.add(:owner_id, :not_permitted) unless vehicle.owner_id == context.id
+      end
+    end
+
+    scope :fleet_status#{model_option}, arguments: { statuses: { type: :array, required: true } } do
+      query { |arguments:| Vehicle.where(status: arguments.fetch(:statuses)) }
+      validate do |vehicle, errors, arguments:|
+        errors.add(:status, :not_permitted) unless arguments.fetch(:statuses).include?(vehicle.status)
+      end
+    end
+
+    #{integration == 'pundit' ? 'role :Member' : 'with_options model: Vehicle, role: :Member'} do
+      permission :read, scopes: [:fleet_owned, { fleet_status: { statuses: ['draft'] } }]
+      permission :create, scopes: [:fleet_owned, { fleet_status: { statuses: ['draft'] } }]
+      permission :update, scopes: [:fleet_owned, { fleet_status: { statuses: ['draft'] } }]
+      accessible_fields [:name, :type, :status], action: :read
+      accessible_fields #{([:name, :type, :status, :owner_id] + (multi_tenant ? [:organisation_id] : [])).inspect}, action: :update
+    end
+  RUBY
+  if multi_tenant
+    vehicle_rules += <<~RUBY
+      default_scope#{integration == 'pundit' ? '' : ' model: Vehicle'} do
+        query { |context:| Vehicle.where(organisation_id: Writ::Configuration.tenant_for(context).id) }
+        validate do |vehicle, errors, context:|
+          unless vehicle.organisation_id == Writ::Configuration.tenant_for(context).id
+            errors.add(:organisation_id, :not_permitted)
+          end
+        end
+      end
+    RUBY
+  end
+  if integration == 'pundit'
+    eval(<<~RUBY, TOPLEVEL_BINDING, __FILE__)
+      class VehiclePolicy < ApplicationPolicy
+        #{vehicle_rules}
+      end
+      class TruckPolicy < VehiclePolicy
+        role :Member do
+          permission :delete, scopes: [:fleet_owned]
+        end
+      end
+      class VanPolicy < VehiclePolicy
+      end
+    RUBY
+  else
+    eval(<<~RUBY, TOPLEVEL_BINDING, __FILE__)
+      Writ.configure do
+        inherit_rules model: Truck, from: Vehicle
+        inherit_rules model: Van, from: Vehicle
+        #{vehicle_rules}
+        permission :delete, model: Truck, role: :Member, scopes: [:fleet_owned]
+      end
+    RUBY
+    if integration == 'pundit_core'
+      class VehiclePolicy < ApplicationPolicy; end
+      class TruckPolicy < VehiclePolicy; end
+      class VanPolicy < VehiclePolicy; end
+    end
+  end
+  Writ::Pundit::Policy.register_policy_inheritances! if integration.start_with?('pundit')
   Writ::Configuration.validate_references!
 
   user = User.create!
@@ -117,6 +192,78 @@ ActiveRecord::Base.transaction do
     own.organisation_id = other_organisation.id
     abort 'update tenant bypass' if access.validation(context: context, action: :update, subject: own).allowed?
   end
+
+  member = roles.find_by!(name: 'Member')
+  vehicle_grants = member.permissions.where(model: 'Vehicle').order(:action).pluck(:action)
+  abort 'parent grants duplicated or missing' unless vehicle_grants == %w[create read update]
+  abort 'empty child grants duplicated' if member.permissions.where(model: 'Van').exists?
+  truck_grant = member.permissions.find_by!(model: 'Truck', action: 'delete')
+  abort 'scope owner was not preserved' unless truck_grant.scope_records.pluck(:model, :name) == [['Vehicle', 'fleet_owned']]
+
+  vehicle_attributes = { owner_id: user.id, name: 'Delivery', status: 'draft' }
+  vehicle_attributes[:organisation_id] = organisation.id if multi_tenant
+  truck = Truck.create!(vehicle_attributes)
+  van = Van.create!(vehicle_attributes)
+  Truck.create!(vehicle_attributes.merge(owner_id: other_user.id))
+  Van.create!(vehicle_attributes.merge(status: 'archived'))
+  Truck.create!(vehicle_attributes.merge(organisation_id: other_organisation.id)) if multi_tenant
+  expected_vehicle_ids = [truck.id, van.id].sort
+  filtered_ids = access.filter(context: context, action: :read, records: Vehicle).order(:id).pluck(:id)
+  abort 'inherited fleet filter' unless filtered_ids == expected_vehicle_ids
+  abort 'child grant missing' unless access.authorization(context: context, action: :delete, subject: truck).allowed?
+  abort 'sibling gained child grant' if access.authorization(context: context, action: :delete, subject: van).allowed?
+  field_map = access.fields_for_many(context: context, action: :read, records: [truck, van])
+  abort 'inherited mixed fields' unless field_map.values.all? { |fields| fields.sort == %w[name status type] }
+  update_fields = %w[name owner_id status type]
+  update_fields << 'organisation_id' if multi_tenant
+  abort 'inherited update fields' unless access.input_fields(context: context, record: truck, action: :update).sort == update_fields.sort
+
+  rejected_inputs = [{ type: 'Van', owner_id: other_user.id }, { type: 'Van', status: 'archived' }]
+  rejected_inputs << { type: 'Van', organisation_id: other_organisation.id } if multi_tenant
+  rejected_inputs.each do |input|
+    proposal = access.propose(context: context, subject: Truck.find(truck.id), attributes: input)
+    field = (input.keys - [:type]).first
+    unless proposal.record.is_a?(Van) && proposal.record.id == truck.id && !proposal.result.allowed? &&
+           proposal.result.errors.any? { |error| error.attribute == field }
+      abort "inherited proposal boundary failed for #{field}"
+    end
+    abort 'rejected proposal was saved' unless Vehicle.find(truck.id).is_a?(Truck)
+  end
+
+  if integration.start_with?('pundit')
+    abort 'adapter inherited read' unless Pundit.authorize(context, truck, :show?) == truck
+    abort 'adapter inherited filter' unless Pundit.policy_scope!(context, Vehicle).order(:id).pluck(:id) == expected_vehicle_ids
+    policy_fields = Pundit.policy!(context, truck).permitted_attributes_for_update.map(&:to_s)
+    abort 'adapter inherited fields' unless policy_fields.sort == update_fields.sort
+    controller = Class.new do
+      include Pundit::Authorization
+      attr_accessor :actor
+      def pundit_user = actor
+    end.new
+    controller.actor = context
+    rejected_inputs.each do |input|
+      begin
+        controller.send(:authorize_proposed!, Truck.find(truck.id), attributes: input)
+        abort 'adapter allowed rejected conversion'
+      rescue Writ::Pundit::ProposedAuthorizationError => error
+        field = (input.keys - [:type]).first
+        unless error.record.is_a?(Van) && error.record.id == truck.id && error.record.errors.of_kind?(field, :not_permitted)
+          abort "adapter lost proposed record or #{field} errors"
+        end
+      end
+    end
+    converted = controller.send(:authorize_proposed!, Truck.find(truck.id), attributes: { type: 'Van', name: 'Converted' })
+  else
+    proposal = access.propose(context: context, subject: Truck.find(truck.id), attributes: { type: 'Van', name: 'Converted' })
+    abort 'core conversion denied' unless proposal.result.allowed?
+    converted = proposal.record
+  end
+  abort 'conversion lost identity' unless converted.is_a?(Van) && converted.id == truck.id && converted.persisted?
+  abort 'conversion saved early' unless Vehicle.find(truck.id).is_a?(Truck)
+  converted.save!
+  stored = Vehicle.find(truck.id)
+  abort 'conversion saved wrong subtype' unless stored.is_a?(Van) && stored.name == 'Converted'
+  abort 'adapter loaded by inherited core workflow' if integration == 'core' && defined?(::Pundit)
   puts 'DOCUMENTED_WORKFLOW_OK'
   raise ActiveRecord::Rollback
 end

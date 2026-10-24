@@ -11,11 +11,43 @@ module Writ
           child.instance_variable_set(:@ap_local_permissions_declared, false)
         end
 
+        def register_rule_inheritance!
+          superclass.register_rule_inheritance! if superclass.respond_to?(:register_rule_inheritance!)
+          model = inheritance_policy_model
+          return unless model
+
+          parent_policy = superclass
+          while parent_policy.respond_to?(:inheritance_policy_model)
+            parent_model = parent_policy.inheritance_policy_model
+            if parent_model && parent_model != model
+              Writ::Configuration.register_model_inheritance(model_name: model.name, parent_model_name: parent_model.name)
+              break
+            end
+            parent_policy = parent_policy.superclass
+          end
+        end
+
+        def inheritance_policy_model
+          return unless name
+          model = policy_model
+          model if model.is_a?(Class) && model < ActiveRecord::Base
+        rescue NameError
+          nil
+        end
+
+        def register_policy_inheritances!
+          ObjectSpace.each_object(Class) do |policy|
+            next unless policy < self && policy.name
+            next unless policy.name.safe_constantize.equal?(policy)
+            policy.register_rule_inheritance!
+          end
+        end
+
         # Get the model class from the policy name
         # Example: AssetPolicy => Asset
         def policy_model
-          @policy_model ||= begin
-            model_name = name.gsub(/Policy$/, '')
+          begin
+            model_name = name.to_s.gsub(/Policy$/, '')
             model_name.constantize
           rescue NameError
             raise NameError,

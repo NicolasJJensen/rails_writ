@@ -27,6 +27,7 @@ Ruby declarations define the **defaults** used to create roles, permissions, and
 - [Using Pundit](#using-pundit)
   - [Install the adapter](#install-the-adapter)
   - [Policies and access checks](#policies-and-access-checks)
+  - [Policy inheritance](#policy-inheritance)
   - [Creating and updating records](#creating-and-updating-records)
   - [Rendering errors](#rendering-errors)
   - [Parameters and custom nesting](#parameters-and-custom-nesting)
@@ -198,7 +199,7 @@ permission :read, model: Asset, role: :Reviewer, scopes: [:published]
 
 A Member must satisfy **both** scopes: the asset must be published and owned by that user. A user who also holds Reviewer can read any published asset, because **either permission** can grant access. A default scope, when defined, constrains both alternatives.
 
-Proposed validation follows the same rule. Errors from a rejected alternative are discarded if another permission allows the proposal. When all alternatives fail, Writ exposes their shared errors, or a general error when their reasons differ.
+Proposed validation follows the same rule. Errors from a rejected alternative are discarded if another permission allows the proposal. When all eligible alternatives fail, Writ exposes their shared errors, or a general error when their reasons differ. Permissions whose conditions did not pass do not affect those proposed-state messages.
 
 ### Default scopes and tenants
 
@@ -396,6 +397,38 @@ end
 
 In tenant mode, also move the default-scope declaration into the policy, omitting `model: Asset`. Define each scope in one place. See the [adapter guide](https://github.com/NicolasJJensen/rails_writ/tree/main/gems/rails_writ-pundit#readme) for custom actions and shared conditions.
 
+### Policy inheritance
+
+For Rails single-table inheritance (STI), inherit the policy alongside the model:
+
+```ruby
+# Van and Truck inherit from the application's Vehicle model.
+class VehiclePolicy < ApplicationPolicy
+  role :FleetManager do
+    permission :read
+    permission :update
+    accessible_fields [:name, :registration_number, :type], action: :update
+  end
+end
+
+class VanPolicy < VehiclePolicy
+end
+
+class TruckPolicy < VehiclePolicy
+  role :FleetManager do
+    permission :delete
+  end
+end
+```
+
+The Vehicle grants allow reading and updating Vehicles, Vans, and Trucks. The Truck grant adds deletion only for Trucks. Parent grants stay stored against Vehicle; they are not copied for every subtype.
+
+Scopes, their arguments, field settings, and lifecycle validators also inherit. Children can use named scopes declared on their ancestors. Parent default scopes remain mandatory, and child default scopes add restrictions. In tenant mode, define the shared tenant boundary on Vehicle so every subtype inherits it.
+
+An explicit child field list replaces that role's inherited list for the same action; otherwise the parent list applies. As with other permissions, a narrower child grant does not revoke a broader inherited grant. Use a default scope for restrictions that must constrain every grant.
+
+No model resolver is needed. Core-only applications declare the same relationship with `inherit_rules model: Truck, from: Vehicle`. See [rule inheritance](docs/reference.md#rule-inheritance-and-sti) for collection checks and customization.
+
 ### Creating and updating records
 
 Use `authorize` to check whether the operation is available on the existing record. Then `authorize_proposed!` checks the submitted fields and proposed record before `save!` runs normal model validations:
@@ -407,14 +440,14 @@ class AssetsController < ApplicationController
 
   def create
     authorize @asset, :create?
-    authorize_proposed!(@asset, attributes: permitted_attributes(@asset))
+    @asset = authorize_proposed!(@asset, attributes: permitted_attributes(@asset))
     @asset.save!
     redirect_to @asset
   end
 
   def update
     authorize @asset, :update?
-    authorize_proposed!(@asset, attributes: permitted_attributes(@asset))
+    @asset = authorize_proposed!(@asset, attributes: permitted_attributes(@asset))
     @asset.save!
     redirect_to @asset
   end
@@ -433,23 +466,27 @@ end
 
 > Build records through your application's usual associations or service when it supplies ownership or tenancy. The example shows where that application logic belongs; Writ does not populate those attributes.
 
-The helper is automatically available with `Pundit::Authorization`. It infers `:create` for a new record and `:update` for a persisted one; pass `action:` for another operation. It assigns `attributes:` when supplied, checks their keys, and never saves.
+The helper is automatically available with `Pundit::Authorization`. It infers `:create` for a new record and `:update` for a persisted one; pass `action:` for another operation. It assigns `attributes:` when supplied, checks their keys, and returns the proposed record without saving.
+
+For STI models, a permitted change to the inheritance column automatically produces the requested subtype. Keep the returned record as shown above so its validations and callbacks run at `save!`. Writ checks the original and resulting authority; no conversion option or separate controller action is required. See [changing an STI type](docs/advanced-writes.md#changing-an-sti-type) for the complete contract.
 
 If attributes were already assigned, omit that argument:
 
 ```ruby
 @asset.assign_attributes(permitted_attributes(@asset))
-authorize_proposed!(@asset)
+@asset = authorize_proposed!(@asset)
 @asset.save!
 ```
 
-This checks fields reported by Rails dirty tracking. Passing `attributes:` explicitly checks every supplied key, including unchanged values; passing an empty hash checks no submitted fields. Both forms validate the whole proposed record against its scopes.
+This checks fields reported by Rails dirty tracking. Passing `attributes:` explicitly checks every supplied key, including unchanged values; an empty hash supplies no field names. An STI conversion also checks the inheritance column even if it was changed before the call. Both forms validate the whole proposed record against its scopes.
 
 The adapter's `permitted_attributes_for_create` and `permitted_attributes_for_update` provide candidate fields before assignment. Create candidates do not run proposed-state validators against an empty record. `authorize_proposed!` performs the final proposed-state check after assignment.
 
 ### Rendering errors
 
 A rejected proposal raises `Writ::Pundit::ProposedAuthorizationError`, carrying `record` and `result`. Writ copies the final field/base errors onto the record, so forms use ordinary `record.errors`. Repeated checks replace only earlier Writ-added errors and preserve unrelated model errors.
+
+Use `error.record` in the handler: a failed STI conversion can carry a different instance from the controller's original record.
 
 Handle this alongside model validation failures at the bottom of your controller:
 
@@ -488,6 +525,8 @@ Turbo Drive can render the same HTML form with status 422. A Turbo Frame respons
 
 `permitted_attributes(@asset)` is Pundit's helper. For `Asset`, it normally reads `params.require(:asset)` and calls `permit` with the policy's field list. The adapter supplies that list; it does not read controller parameters itself.
 
+An explicit policy method such as `permitted_attributes_for_update` takes precedence. Otherwise Writ uses your policy's generic `permitted_attributes`, when defined, or its computed field list. Use `super` in an action-specific method to adapt that fallback. These hooks shape input; `authorize_proposed!` still enforces Writ's field and record restrictions.
+
 For a request such as `{ data: { asset: { name: "New name" } } }`, override Pundit's parameter hook:
 
 ```ruby
@@ -512,25 +551,24 @@ assets = Writ::Access.filter(records: Asset.all, action: :read, context: user)
 assets.order(:name).limit(20)
 ```
 
-For writes, check saved access before assignment, use your application's parameter handling, then validate the proposal:
+For writes, use your application's parameter handling and build a checked proposal:
 
 ```ruby
 saved = Writ::Access.authorization(subject: asset, action: :update, context: user)
 raise AccessDenied unless saved.allowed?
 
-asset.assign_attributes(attributes)
-result = Writ::Access.validation(
-  subject: asset, action: :update, context: user,
-  submitted_fields: asset.changed_attribute_names_to_save
+proposal = Writ::Access.propose(
+  subject: asset, action: :update, context: user, attributes: attributes
 )
-result.apply_errors_to(asset)
-raise ActiveRecord::RecordInvalid, asset unless result.allowed?
+asset = proposal.record
+proposal.result.apply_errors_to(asset)
+raise ActiveRecord::RecordInvalid, asset unless proposal.result.allowed?
 asset.save!
 ```
 
-> `AccessDenied` is an application exception. Core checks return results and do not choose HTTP responses. Use `:create` with a new record for creation; its initial authorization checks grant availability, then `validation` checks proposed values.
+> `AccessDenied` is an application exception. Core checks return results and do not choose HTTP responses. Use a new record for creation; `propose` infers create/update when `action:` is omitted. It returns the correctly typed record and its authorization result without saving.
 
-`input_fields` returns candidate fields before assignment. `readable_fields` and `writable_fields` return field decisions for the given record. Passing `submitted_fields:` to core validation adds field checks; omitting it checks the proposal's scopes and validators without checking a submitted field list.
+Omit `attributes:` from `propose` to use already-assigned values and Rails dirty tracking. `input_fields` returns candidate fields before assignment. `readable_fields` and `writable_fields` return field decisions for the given record. The lower-level `validation` API checks an already correctly typed record; passing `submitted_fields:` adds field checks, while omitting it checks only scopes and validators.
 
 ## Configuration and loading
 

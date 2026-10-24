@@ -2,6 +2,8 @@
 
 module Writ
   class Configuration
+    DEFAULT_AUTHORIZATION_MODEL_RESOLVER = ->(model) { model }.freeze
+
     class << self
       attr_accessor :default_role_name, :multi_tenant, :tenant_source
       attr_reader :scoping_model
@@ -195,7 +197,11 @@ module Writ
       attr_writer :authorization_model_resolver
 
       def authorization_model_resolver
-        @authorization_model_resolver || ->(model) { model }
+        @authorization_model_resolver || DEFAULT_AUTHORIZATION_MODEL_RESOLVER
+      end
+
+      def custom_authorization_model_resolver?
+        !!(@authorization_model_resolver && @authorization_model_resolver != DEFAULT_AUTHORIZATION_MODEL_RESOLVER)
       end
 
       def authorization_model_for(model)
@@ -209,6 +215,13 @@ module Writ
                 'resolved models must share the same STI base class and table'
         end
         resolved
+      end
+
+      def authorization_models_for(model)
+        resolved = authorization_model_for(model)
+        return [resolved] if custom_authorization_model_resolver? || resolved != model
+
+        registry.model_lineage(model_name: model.name).map(&:constantize)
       end
 
       def field_default
@@ -376,7 +389,8 @@ module Writ
           I18n.t("writ.roles.#{role_name}", default: role_name.to_s.humanize)
       end
 
-      delegate :get_scope_callable, :scope_callable_registered?,
+      delegate :register_model_inheritance, :model_lineage, :scope_owner, :scope_model_allowed?, :default_scope_models,
+               :get_scope_callable, :scope_callable_registered?,
                :scope_callables_for, :all_scope_callables, :remove_scope_callable,
                :models, :all_configured_models, :scopes_for,
                :get_default_scope, :default_scope_registered?,

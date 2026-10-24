@@ -7,6 +7,8 @@ require_relative 'access/permission_preparation'
 require_relative 'access/field_access'
 require_relative 'access/proposed_check'
 require_relative 'access/result'
+require_relative 'access/inheritance'
+require_relative 'access/proposal'
 
 module Writ
   # ActiveRecord authorization primitives. Presentation and serialization belong to the host.
@@ -15,6 +17,8 @@ module Writ
                                      keyword_init: true)
     extend FieldAccess
     extend ProposedCheck
+    extend Inheritance
+    extend Proposal
     class << self
       def grant_available?(context:, action:, model:)
         validate_action!(action)
@@ -86,26 +90,24 @@ module Writ
         return Configuration.field_default unless roles
 
         model_name = model.is_a?(Class) ? Configuration.authorization_model_for(model).name : model.to_s
-        role_fields_list = roles.pluck(:accessible_fields)
-
-        return Configuration.field_default if role_fields_list.empty?
-
+        names = model.is_a?(Class) ? metadata_models(model_name.constantize).map(&:name) : [model_name]
         combined = Set.new
-        has_model = false
-
-        role_fields_list.each do |af_hash|
-          next unless af_hash&.key?(model_name)
-          has_model = true
-          fields = af_hash[model_name]
-          entries = fields.is_a?(Hash) ? fields.values : [fields]
-          entries.each do |value|
+        found = false
+        roles.pluck(:accessible_fields).each do |metadata|
+          entries = names.filter_map { |name| [name, metadata[name]] if metadata&.key?(name) }
+          next if entries.empty?
+          found = true
+          actions = entries.flat_map { |_, value| value.is_a?(Hash) ? value.keys : [nil] }.uniq
+          actions.each do |action|
+            entry = entries.find { |_, value| !value.is_a?(Hash) || value.key?(action) }
+            next unless entry
+            value = entry.last
+            value = value[action] if value.is_a?(Hash)
             return :all if value.nil? || value == :all
             combined.merge(value.map(&:to_s))
           end
         end
-
-        return Configuration.field_default unless has_model
-        combined.to_a
+        found ? combined.to_a : Configuration.field_default
       end
 
       def potential_permissions(context: nil)
@@ -141,7 +143,7 @@ module Writ
           base = ScopeEvaluator.strip_ordering_and_limits(subject.all)
         end
         authorization_model = Configuration.authorization_model_for(subject)
-        prepared = prepare_permissions(context, action, authorization_model, evaluated: observe)
+        prepared = prepare_membership_permissions(context, action, subject, evaluated: observe)
         membership = permission_membership(context, subject, authorization_model, prepared)
         result = base.where(primary_key!(subject) => membership.reselect(subject.arel_table[primary_key!(subject)]))
         if observe
@@ -194,7 +196,7 @@ module Writ
       def saved_authorization_result(context, action, records)
         model = records.model
         authorization_model = Configuration.authorization_model_for(model)
-        prepared = prepare_permissions(context, action, authorization_model, collect_denials: true)
+        prepared = prepare_membership_permissions(context, action, model, collect_denials: true)
         return CheckResult.new(allowed: false, reason: :no_permission_source) unless prepared.source
         return CheckResult.new(allowed: false, reason: :no_grants) if prepared.permissions.empty?
         return CheckResult.new(allowed: false, reason: denial_reason(prepared.denied), denied_grants: prepared.denied) if prepared.valid.empty?
@@ -206,20 +208,6 @@ module Writ
 
         denials = prepared.denied + prepared.valid.map { |permission| GrantDenial.new(permission_id: permission.id, reason: :scope_mismatch) }
         CheckResult.new(allowed: false, reason: denial_reason(denials), denied_grants: denials)
-      end
-
-      def permission_membership(context, model, authorization_model, prepared, permissions: prepared.valid)
-        pk = primary_key!(model)
-        base = ScopeEvaluator.default_scoped_records(context, model, authorization_model)
-        grant_base = ScopeEvaluator.strip_ordering_and_limits(model.all)
-        # Union grants inside the default boundary so an additional grant cannot bypass that boundary.
-        permissions.reduce(base.none) do |membership, permission|
-          branch = ScopeEvaluator.filter_records_by_context_and_permission(
-            context, model, permission, authorization_model: authorization_model,
-            normalized_arguments: prepared.normalized_arguments, base: grant_base, apply_default: false
-          )
-          membership.or(base.where(pk => branch.reselect(model.arel_table[pk])))
-        end
       end
 
       def validation_records!(subject)
@@ -238,7 +226,7 @@ module Writ
         end
       end
 
-      def local_validation_result(context, action, record, submitted_fields: nil)
+      def local_validation_result(context, action, record, submitted_fields: nil, field_mode: :saved, validator_models: nil)
         model = record.class
         authorization_model = Configuration.authorization_model_for(model)
         prepared = prepare_permissions(context, action, authorization_model, collect_denials: true)
@@ -251,21 +239,27 @@ module Writ
         # Restrictions on transitions between those states belong in host validators.
         preflight_proposed_matchers!(permissions, model, authorization_model)
         failures = []
-        matched = permissions.any? do |permission|
+        matching = []
+        permissions.each do |permission|
           errors = proposed_grant_errors(context, record, permission, model, authorization_model,
                                          normalized_arguments: prepared.normalized_arguments)
           failures << GrantDenial.new(permission_id: permission.id, reason: :proposed_scope_mismatch, errors: errors) unless errors.empty?
-          errors.empty?
+          matching << permission if errors.empty?
+          break if matching.any? && field_mode != :proposed
         end
-        unless matched
+        unless matching.any?
           denials = prepared.denied + failures
-          shared = denials.map(&:errors).reduce { |left, right| left & right }
+          shared = failures.map(&:errors).reduce { |left, right| left & right }
           return CheckResult.new(allowed: false, reason: :proposed_scope_mismatch, denied_grants: denials,
                                  errors: shared&.any? ? shared : Access.generic_errors)
         end
 
         if submitted_fields
-          permitted = input_fields(context: context, record: record, action: action)
+          permitted = if field_mode == :proposed
+            resolve_fields(context, action, record, authorization_model, matching.map(&:role).uniq)
+          else
+            input_fields(context: context, record: record, action: action)
+          end
           forbidden = if permitted == :all
             []
           else
@@ -281,13 +275,15 @@ module Writ
 
         validator_action = record.new_record? ? :create : (action.to_s == 'update' ? :update : nil)
         if validator_action
-          errors = run_action_validators(context, record, validator_action, authorization_model)
+          errors = run_action_validators(context, record, validator_action, validator_models || model)
           return CheckResult.new(allowed: false, reason: :validator_rejected, errors: errors) unless errors.empty?
         end
         CheckResult.new(allowed: true, reason: :granted)
       end
 
       def validate_local_lifecycle!(record, action)
+        raise ArgumentError, 'Validation requires a non-destroyed record' if record.destroyed?
+        validate_sti_identity!(record)
         if record.new_record?
           raise ArgumentError, 'validation requires action create for a new record' unless action.to_s == 'create'
         elsif action.to_s == 'create'
@@ -297,16 +293,28 @@ module Writ
         end
       end
 
-      def validate_update_record!(record)
+      def validate_update_record!(record, allow_sti_change: false)
         model = record.class
         pk = primary_key!(model)
         if record.public_send(pk).nil? || record.will_save_change_to_attribute?(pk)
           raise ArgumentError, 'Update checks require the unchanged primary key'
         end
-        if model.inheritance_column && record.will_save_change_to_attribute?(model.inheritance_column)
+        if !allow_sti_change && model.inheritance_column && record.will_save_change_to_attribute?(model.inheritance_column)
           raise ArgumentError, 'Update checks do not support changes to the inheritance column'
         end
         reject_pending_association_changes!(record)
+      end
+
+      def validate_sti_identity!(record)
+        model = record.class
+        column = model.inheritance_column
+        return unless column && model.column_names.include?(column)
+        base = model.base_class
+        value = record.public_send(column)
+        expected = value.blank? ? base : base.send(:find_sti_class, value)
+        return if expected == model
+
+        raise ArgumentError, 'The inheritance column must match the record class; use Access.propose to change its type'
       end
 
       def reject_pending_association_changes!(record)
@@ -321,11 +329,12 @@ module Writ
       end
 
       def prepare_permissions(context, action, authorization_model, includes: [], evaluated: false,
-                              validate_scopes: true, collect_denials: false)
+                              validate_scopes: true, collect_denials: false, authorization_models: nil)
         PermissionPreparation.new(
           context: context,
           action: action,
           authorization_model: authorization_model,
+          authorization_models: authorization_models || metadata_models(authorization_model),
           includes: includes,
           evaluated: evaluated,
           validate_scopes: validate_scopes,

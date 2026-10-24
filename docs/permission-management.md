@@ -55,6 +55,16 @@ Each owner is migrated in a transaction, with role locks. Keep definitions stabl
 
 `Generator.generate_permissions` accepts complete grant definitions for lower-level migrations. It also preserves existing model/action grants and field values; it is not a synchronization/reset API.
 
+## Inherited permissions and scopes
+
+Rule inheritance does not duplicate parent permissions into child models. A Vehicle grant applies to registered Van and Truck descendants while remaining one stored Vehicle permission. Generate a child model/action only when adding a distinct child grant; do not generate copies of every inherited grant.
+
+Field settings follow the same principle. A role's child/action entry overrides that role's inherited entry; removing the child entry restores inheritance. An empty array explicitly permits no fields for that entry, rather than asking Writ to fall back to the parent.
+
+Scope attachments retain the defining scope row. A Truck permission can therefore reference an inherited Vehicle scope, including its own normalized argument values. Replacing a scope name in Truck does not silently rebind stored attachments that point to Vehicle. Treat a change of scope identity as an explicit permission edit.
+
+The same storage rules apply globally and within each tenant. Updating an organisation's Vehicle grant affects its descendant permissions only for users assigned that organisation's roles.
+
 ## Tenant-specific condition arguments
 
 Define a parameterized condition and attach it as a template:
@@ -114,6 +124,8 @@ For custom deployment reporting, `Writ::Generator.stale_items(registry)` and `cl
 ## Edit attachments or rule schemas
 
 Permission scope and condition attachments support nested attributes, including `_destroy: true`. These changes alter authorization configuration: restrict them to appropriate administrators. Attachment writes participate in the permission save transaction.
+
+For inherited scopes, retain the defining model when selecting the scope record. A permission can attach scopes from its own model or registered ancestors; an unrelated model's scope is not valid merely because its name matches.
 
 Changing a rule's argument schema requires migrating affected stored arguments. Nonempty arguments on a now-argumentless rule are rejected at runtime. The configured invalid-argument mode determines whether evaluation raises or excludes the affected grant.
 
